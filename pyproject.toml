@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "health-sync"
+version = "0.1.0"
+description = "Sync Oura, Withings, and Hevy data into a local SQLite DB"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "requests>=2.0.0",
+]
+
+[project.scripts]
+health-sync = "health_sync.cli:main"
+
