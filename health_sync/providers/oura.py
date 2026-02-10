@@ -29,7 +29,9 @@ OURA_OAUTH_TOKEN = "https://api.ouraring.com/oauth/token"
 
 
 def _oura_default_redirect_uri() -> str:
-    return "http://127.0.0.1:8484/callback"
+    # Oura accepts `http://localhost/...` for local redirect URIs but rejects
+    # `http://127.0.0.1/...` with `400 invalid_request`.
+    return "http://localhost:8484/callback"
 
 
 def _oura_scopes(cfg: LoadedConfig) -> str:

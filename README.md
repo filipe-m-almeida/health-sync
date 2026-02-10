@@ -97,6 +97,7 @@ Oura:
 - `[oura].enabled`: Set to `true` to sync Oura (default: `false`)
 - `[oura].access_token`: Oura PAT (simplest)
 - `[oura].client_id`, `[oura].client_secret`, `[oura].redirect_uri`: OAuth2
+- Note: for local OAuth, use `http://localhost:8484/callback`. Oura rejects `http://127.0.0.1:...` with `400 invalid_request`.
 - `[oura].start_date`: YYYY-MM-DD (default: `2010-01-01`)
 - `[oura].overlap_days`: Re-fetch overlap window on each sync (default: `7`)
 

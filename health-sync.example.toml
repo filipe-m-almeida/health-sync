@@ -22,7 +22,7 @@ enabled = false
 # Option B: OAuth2 (Authorization Code)
 # client_id = "..."
 # client_secret = "..."
-# redirect_uri = "http://127.0.0.1:8484/callback"
+# redirect_uri = "http://localhost:8484/callback"
 #
 # Keep it broad; adjust if your Oura app is configured with different scopes.
 # scopes = "personal daily sleep workout heartrate tag session spo2"

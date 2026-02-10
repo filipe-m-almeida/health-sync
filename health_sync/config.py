@@ -25,7 +25,9 @@ class OuraConfig:
     # OAuth2 (Authorization Code + refresh token)
     client_id: str | None = None
     client_secret: str | None = None
-    redirect_uri: str = "http://127.0.0.1:8484/callback"
+    # Oura's OAuth authorize endpoint rejects `http://127.0.0.1/...` with
+    # `400 invalid_request`; `http://localhost/...` works for local flows.
+    redirect_uri: str = "http://localhost:8484/callback"
     scopes: str = "personal daily sleep workout heartrate tag session spo2"
 
     # Sync tuning
