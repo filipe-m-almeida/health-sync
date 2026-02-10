@@ -50,7 +50,7 @@ def _withings_scopes(cfg: LoadedConfig) -> str:
     # Withings scopes are comma-separated. Sleep endpoints are covered by
     # `user.activity` (there is no `user.sleep` scope).
     raw = cfg.config.withings.scopes
-    parts = [p.strip() for p in re.split(r"[\\s,]+", raw) if p and p.strip()]
+    parts = [p.strip() for p in re.split(r"[\s,]+", raw) if p and p.strip()]
     out: list[str] = []
     for p in parts:
         if p == "user.sleep":
