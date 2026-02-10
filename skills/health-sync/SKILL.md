@@ -58,6 +58,11 @@ Those files describe:
 - What `start_time`/`end_time`/`source_updated_at` mean
 - The important JSON keys inside `payload_json` (including nested arrays/objects)
 
+Default behavior:
+
+- When the user asks about a specific provider, read the corresponding reference file first and start writing SQL from the documented schema.
+- Only run schema-discovery queries (e.g., listing JSON keys with `json_each`) when the question depends on fields that are not documented or when a provider has introduced a new shape.
+
 ## References
 
 Read only what you need:
