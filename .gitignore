@@ -18,3 +18,11 @@ venv/
 .env
 health-sync.toml
 *.log
+
+# Local docs / analysis notes
+ANALYSIS_INSTRUCTIONS.md
+
+# Python build artifacts
+build/
+dist/
+*.egg-info/
