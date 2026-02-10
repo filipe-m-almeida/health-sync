@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import secrets
 import time
 from datetime import UTC, datetime, timedelta
@@ -8,10 +7,9 @@ from urllib.parse import quote, urlencode, urlparse
 
 import requests
 
+from ..config import LoadedConfig, require_str
 from ..db import HealthSyncDb
 from ..util import (
-    getenv_default,
-    getenv_required,
     hmac_sha256_hex,
     iso_to_dt,
     oauth_listen_for_code,
@@ -36,20 +34,20 @@ def _withings_default_redirect_uri() -> str:
     return "http://127.0.0.1:8485/callback"
 
 
-def _withings_redirect() -> tuple[str, int, str]:
-    redirect_uri = getenv_default("WITHINGS_REDIRECT_URI", _withings_default_redirect_uri())
+def _withings_redirect(cfg: LoadedConfig) -> tuple[str, int, str]:
+    redirect_uri = cfg.config.withings.redirect_uri or _withings_default_redirect_uri()
     u = urlparse(redirect_uri)
     if u.scheme not in ("http", "https"):
-        raise RuntimeError(f"Invalid WITHINGS_REDIRECT_URI: {redirect_uri}")
+        raise RuntimeError(f"Invalid `withings.redirect_uri`: {redirect_uri}")
     host = u.hostname or "127.0.0.1"
     port = u.port or (443 if u.scheme == "https" else 80)
     path = u.path or "/callback"
     return redirect_uri, port, path
 
 
-def _withings_scopes() -> str:
+def _withings_scopes(cfg: LoadedConfig) -> str:
     # Most people want metrics + activity + sleep.
-    return getenv_default("WITHINGS_SCOPES", "user.metrics,user.activity,user.sleep")
+    return cfg.config.withings.scopes
 
 
 def _withings_signature_for(secret: str, *, action: str, client_id: str, timestamp: int | None = None, nonce: str | None = None) -> str:
@@ -86,16 +84,16 @@ def _withings_get_nonce(sess: requests.Session, *, client_id: str, client_secret
     return str(nonce)
 
 
-def withings_auth(db: HealthSyncDb, *, listen_host: str = "127.0.0.1", listen_port: int = 0) -> None:
-    client_id = getenv_required("WITHINGS_CLIENT_ID")
-    client_secret = getenv_required("WITHINGS_CLIENT_SECRET")
-    redirect_uri, redirect_port, callback_path = _withings_redirect()
+def withings_auth(db: HealthSyncDb, cfg: LoadedConfig, *, listen_host: str = "127.0.0.1", listen_port: int = 0) -> None:
+    client_id = require_str(cfg, cfg.config.withings.client_id, key="withings.client_id")
+    client_secret = require_str(cfg, cfg.config.withings.client_secret, key="withings.client_secret")
+    redirect_uri, redirect_port, callback_path = _withings_redirect(cfg)
 
     if listen_port == 0:
         listen_port = redirect_port
 
     state = secrets.token_urlsafe(16)
-    scope = _withings_scopes()
+    scope = _withings_scopes(cfg)
 
     auth_url = f"{WITHINGS_AUTHORIZE}?{urlencode({'response_type': 'code', 'client_id': client_id, 'redirect_uri': redirect_uri, 'scope': scope, 'state': state}, quote_via=quote)}"
 
@@ -155,10 +153,13 @@ def withings_auth(db: HealthSyncDb, *, listen_host: str = "127.0.0.1", listen_po
     print("Stored Withings OAuth token in DB.")
 
 
-def _withings_refresh_if_needed(db: HealthSyncDb, sess: requests.Session) -> str:
+def _withings_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: requests.Session) -> str:
     tok = db.get_oauth_token(WITHINGS_PROVIDER)
     if not tok:
-        raise RuntimeError("Missing Withings credentials. Run `python -m health_sync auth withings`.")
+        raise RuntimeError(
+            "Missing Withings credentials. Run `health-sync auth withings` "
+            f"(config: {cfg.path})."
+        )
 
     access_token = tok["access_token"]
     refresh_token = tok.get("refresh_token")
@@ -175,8 +176,8 @@ def _withings_refresh_if_needed(db: HealthSyncDb, sess: requests.Session) -> str
     if exp - datetime.now(UTC) > timedelta(seconds=60):
         return access_token
 
-    client_id = getenv_required("WITHINGS_CLIENT_ID")
-    client_secret = getenv_required("WITHINGS_CLIENT_SECRET")
+    client_id = require_str(cfg, cfg.config.withings.client_id, key="withings.client_id")
+    client_secret = require_str(cfg, cfg.config.withings.client_secret, key="withings.client_secret")
 
     nonce = _withings_get_nonce(sess, client_id=client_id, client_secret=client_secret)
     sig = _withings_signature_for(client_secret, action="requesttoken", client_id=client_id, nonce=nonce)
@@ -242,18 +243,16 @@ def _set_watermark_epoch(db: HealthSyncDb, *, resource: str, epoch: int) -> None
     db.set_sync_state(provider=WITHINGS_PROVIDER, resource=resource, watermark=str(int(epoch)))
 
 
-def withings_sync(db: HealthSyncDb) -> None:
+def withings_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
     sess = requests.Session()
-    access_token = _withings_refresh_if_needed(db, sess)
+    access_token = _withings_refresh_if_needed(db, cfg, sess)
 
-    overlap_s = int(getenv_default("WITHINGS_OVERLAP_SECONDS", "300"))
+    overlap_s = int(cfg.config.withings.overlap_seconds)
     now_epoch = int(time.time())
 
-    # Default to a broad list of measure types; can be overridden via env.
-    meastypes_env = os.environ.get("WITHINGS_MEASTYPES")
-    if meastypes_env:
-        meastypes = [x.strip() for x in meastypes_env.split(",") if x.strip()]
-    else:
+    # Default to a broad list of measure types; can be overridden via config.
+    meastypes = cfg.config.withings.meastypes
+    if not meastypes:
         meastypes = [
             "1",   # Weight
             "4",   # Height

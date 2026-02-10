@@ -1,23 +1,26 @@
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime, timedelta
 
 import requests
 
+from ..config import LoadedConfig
 from ..db import HealthSyncDb
-from ..util import getenv_default, iso_to_dt, request_json, sha256_hex, utc_now_iso
+from ..util import iso_to_dt, request_json, sha256_hex, utc_now_iso
 
 
 HEVY_PROVIDER = "hevy"
-HEVY_BASE = os.environ.get("HEVY_BASE_URL", "https://api.hevyapp.com")
+HEVY_BASE_DEFAULT = "https://api.hevyapp.com"
 
 
-def _hevy_api_key() -> str:
-    k = os.environ.get("HEVY_API_KEY")
-    if not k:
-        raise RuntimeError("Missing HEVY_API_KEY (get it from https://hevy.com/settings?developer)")
-    return k
+def _hevy_api_key(cfg: LoadedConfig) -> str:
+    k = cfg.config.hevy.api_key
+    if k:
+        return k
+    raise RuntimeError(
+        "Missing Hevy API key. Set `hevy.api_key` in your config file "
+        f"({cfg.path}). You can get it from https://hevy.com/settings?developer"
+    )
 
 
 def _hevy_headers(api_key: str) -> dict[str, str]:
@@ -39,12 +42,13 @@ def _iso_max(a: str | None, b: str | None) -> str | None:
         return a
 
 
-def hevy_sync(db: HealthSyncDb) -> None:
-    api_key = _hevy_api_key()
+def hevy_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
+    api_key = _hevy_api_key(cfg)
     sess = requests.Session()
 
-    overlap_s = int(getenv_default("HEVY_OVERLAP_SECONDS", "300"))
-    page_size = int(getenv_default("HEVY_PAGE_SIZE", "10"))
+    base_url = cfg.config.hevy.base_url or HEVY_BASE_DEFAULT
+    overlap_s = int(cfg.config.hevy.overlap_seconds)
+    page_size = int(cfg.config.hevy.page_size)
     if page_size > 10:
         page_size = 10
     if page_size < 1:
@@ -63,7 +67,7 @@ def hevy_sync(db: HealthSyncDb) -> None:
                 j = request_json(
                     sess,
                     "GET",
-                    f"{HEVY_BASE}/v1/workouts",
+                    f"{base_url}/v1/workouts",
                     headers=_hevy_headers(api_key),
                     params={"page": page, "pageSize": page_size},
                 )
@@ -102,7 +106,7 @@ def hevy_sync(db: HealthSyncDb) -> None:
             since_dt = iso_to_dt(watermark) - timedelta(seconds=overlap_s)
             since = since_dt.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         except Exception:  # noqa: BLE001
-            since = getenv_default("HEVY_SINCE", "1970-01-01T00:00:00Z")
+            since = cfg.config.hevy.since
 
         page = 1
         max_event_time: str | None = watermark
@@ -110,7 +114,7 @@ def hevy_sync(db: HealthSyncDb) -> None:
             j = request_json(
                 sess,
                 "GET",
-                f"{HEVY_BASE}/v1/workouts/events",
+                f"{base_url}/v1/workouts/events",
                 headers=_hevy_headers(api_key),
                 params={"since": since, "page": page, "pageSize": page_size},
             )

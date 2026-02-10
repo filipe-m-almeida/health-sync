@@ -1,0 +1,63 @@
+# health-sync configuration (example)
+#
+# Copy this to `health-sync.toml` and fill in the values you need.
+# This file is meant to be safe to commit; secrets are commented out.
+#
+# Notes:
+# - You can run with a specific config path via `health-sync --config /path/to/health-sync.toml ...`
+# - Any values you leave commented will fall back to built-in defaults.
+#
+
+[app]
+# SQLite DB path.
+# db = "./health.sqlite"
+
+[oura]
+# Set to true to sync this provider.
+enabled = false
+
+# Option A: Personal Access Token (PAT)
+# access_token = "..."
+#
+# Option B: OAuth2 (Authorization Code)
+# client_id = "..."
+# client_secret = "..."
+# redirect_uri = "http://127.0.0.1:8484/callback"
+#
+# Keep it broad; adjust if your Oura app is configured with different scopes.
+# scopes = "personal daily sleep workout heartrate tag session spo2"
+#
+# Sync tuning:
+# start_date = "2010-01-01"  # YYYY-MM-DD
+# overlap_days = 7
+
+[withings]
+# Set to true to sync this provider.
+enabled = false
+
+# OAuth2
+# client_id = "..."
+# client_secret = "..."
+# redirect_uri = "http://127.0.0.1:8485/callback"
+# scopes = "user.metrics,user.activity,user.sleep"
+#
+# Sync tuning:
+# overlap_seconds = 300
+#
+# Optional list of measure type ids to sync.
+# If omitted, a broad default list is used.
+# meastypes = ["1", "4", "5"]
+
+[hevy]
+# Set to true to sync this provider.
+enabled = false
+
+# Hevy API key is Pro-only; get it from https://hevy.com/settings?developer
+# api_key = "00000000-0000-0000-0000-000000000000"
+#
+# base_url = "https://api.hevyapp.com"
+#
+# Sync tuning:
+# overlap_seconds = 300
+# page_size = 10  # 1-10
+# since = "1970-01-01T00:00:00Z"

@@ -1,19 +1,17 @@
 from __future__ import annotations
 
-import os
-import secrets
 import json
+import secrets
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote, urlencode, urlparse
 
 import requests
 
+from ..config import LoadedConfig, require_str
 from ..db import HealthSyncDb
 from ..util import (
     basic_auth_header,
     dt_to_iso_z,
-    getenv_default,
-    getenv_required,
     iso_to_dt,
     parse_yyyy_mm_dd,
     oauth_listen_for_code,
@@ -34,28 +32,25 @@ def _oura_default_redirect_uri() -> str:
     return "http://127.0.0.1:8484/callback"
 
 
-def _oura_scopes() -> str:
+def _oura_scopes(cfg: LoadedConfig) -> str:
     # Keep it broad; users can override if their app is configured with different scopes.
-    return getenv_default(
-        "OURA_SCOPES",
-        "personal daily sleep workout heartrate tag session spo2",
-    )
+    return cfg.config.oura.scopes
 
 
-def _oura_redirect() -> tuple[str, int, str]:
-    redirect_uri = getenv_default("OURA_REDIRECT_URI", _oura_default_redirect_uri())
+def _oura_redirect(cfg: LoadedConfig) -> tuple[str, int, str]:
+    redirect_uri = cfg.config.oura.redirect_uri or _oura_default_redirect_uri()
     u = urlparse(redirect_uri)
     if u.scheme not in ("http", "https"):
-        raise RuntimeError(f"Invalid OURA_REDIRECT_URI: {redirect_uri}")
+        raise RuntimeError(f"Invalid `oura.redirect_uri`: {redirect_uri}")
     host = u.hostname or "127.0.0.1"
     port = u.port or (443 if u.scheme == "https" else 80)
     path = u.path or "/callback"
     return redirect_uri, port, path
 
 
-def oura_auth(db: HealthSyncDb, *, listen_host: str = "127.0.0.1", listen_port: int = 0) -> None:
-    # Fast path: PAT.
-    pat = os.environ.get("OURA_ACCESS_TOKEN")
+def oura_auth(db: HealthSyncDb, cfg: LoadedConfig, *, listen_host: str = "127.0.0.1", listen_port: int = 0) -> None:
+    # Fast path: PAT from config.
+    pat = cfg.config.oura.access_token
     if pat:
         db.set_oauth_token(
             provider=OURA_PROVIDER,
@@ -69,15 +64,15 @@ def oura_auth(db: HealthSyncDb, *, listen_host: str = "127.0.0.1", listen_port: 
         print("Stored Oura personal access token in DB.")
         return
 
-    client_id = getenv_required("OURA_CLIENT_ID")
-    client_secret = getenv_required("OURA_CLIENT_SECRET")
-    redirect_uri, redirect_port, callback_path = _oura_redirect()
+    client_id = require_str(cfg, cfg.config.oura.client_id, key="oura.client_id")
+    client_secret = require_str(cfg, cfg.config.oura.client_secret, key="oura.client_secret")
+    redirect_uri, redirect_port, callback_path = _oura_redirect(cfg)
 
     if listen_port == 0:
         listen_port = redirect_port
 
     state = secrets.token_urlsafe(16)
-    scope = _oura_scopes()
+    scope = _oura_scopes(cfg)
 
     auth_url = f"{OURA_OAUTH_AUTHORIZE}?{urlencode({'response_type': 'code', 'client_id': client_id, 'redirect_uri': redirect_uri, 'scope': scope, 'state': state}, quote_via=quote)}"
 
@@ -128,16 +123,17 @@ def oura_auth(db: HealthSyncDb, *, listen_host: str = "127.0.0.1", listen_port: 
     print("Stored Oura OAuth token in DB.")
 
 
-def _oura_refresh_if_needed(db: HealthSyncDb, sess: requests.Session) -> str:
-    # PAT via env: use directly.
-    pat = os.environ.get("OURA_ACCESS_TOKEN")
+def _oura_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: requests.Session) -> str:
+    # PAT via config: use directly.
+    pat = cfg.config.oura.access_token
     if pat:
         return pat
 
     tok = db.get_oauth_token(OURA_PROVIDER)
     if not tok:
         raise RuntimeError(
-            "Missing Oura credentials. Set OURA_ACCESS_TOKEN or run `python -m health_sync auth oura`."
+            "Missing Oura credentials. Set `oura.access_token` in your config file "
+            f"({cfg.path}) or run `health-sync auth oura`."
         )
 
     access_token = tok["access_token"]
@@ -156,8 +152,8 @@ def _oura_refresh_if_needed(db: HealthSyncDb, sess: requests.Session) -> str:
     if exp - datetime.now(UTC) > timedelta(seconds=60):
         return access_token
 
-    client_id = getenv_required("OURA_CLIENT_ID")
-    client_secret = getenv_required("OURA_CLIENT_SECRET")
+    client_id = require_str(cfg, cfg.config.oura.client_id, key="oura.client_id")
+    client_secret = require_str(cfg, cfg.config.oura.client_secret, key="oura.client_secret")
 
     token = request_json(
         sess,
@@ -239,13 +235,13 @@ def _oura_fetch_all(
     return items
 
 
-def oura_sync(db: HealthSyncDb) -> None:
+def oura_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
     sess = requests.Session()
-    access_token = _oura_refresh_if_needed(db, sess)
+    access_token = _oura_refresh_if_needed(db, cfg, sess)
 
-    start_date = getenv_default("OURA_START_DATE", "2010-01-01")
+    start_date = cfg.config.oura.start_date
     today = datetime.now(UTC).date().isoformat()
-    overlap_days = int(getenv_default("OURA_OVERLAP_DAYS", "7"))
+    overlap_days = int(cfg.config.oura.overlap_days)
 
     # Daily + session collections use date windows; Oura doesn't provide a general updated_since flag.
     resources: list[tuple[str, str]] = [

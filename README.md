@@ -10,29 +10,31 @@ into a local SQLite database.
 
 This repo was scaffolded as a pragmatic “local cache” tool:
 
-- First run: backfills history (bounded by optional start-date env vars).
+- First run: backfills history (bounded by optional start-date config values).
 - Subsequent runs: fetch deltas (Withings `lastupdate`, Hevy workout events, Oura date windows with overlap).
 
 ## Quick Start
 
-1. Pick a DB path:
+1. Create a config file:
 
 ```bash
-export HEALTH_SYNC_DB="$PWD/health.sqlite"
+cp health-sync.example.toml health-sync.toml
 ```
 
-2. Install deps (only `requests` is required; it’s often already installed):
+Fill in `health-sync.toml` (DB path, API keys, OAuth client ids/secrets).
+
+2. Install deps with `uv`:
 
 ```bash
-python3 -m venv .venv
+uv venv
 . .venv/bin/activate
-python3 -m pip install -r requirements.txt
+uv pip install -e .
 ```
 
 3. Initialize DB:
 
 ```bash
-python3 -m health_sync init-db
+health-sync init-db
 ```
 
 4. Authenticate providers (choose what you use):
@@ -41,26 +43,22 @@ python3 -m health_sync init-db
 
 Option A (simplest): Personal Access Token
 
-```bash
-export OURA_ACCESS_TOKEN="..."
-```
+Set `oura.access_token` in `health-sync.toml`.
 
 Option B: OAuth2 (Authorization Code)
 
+Set `oura.client_id`, `oura.client_secret`, and `oura.redirect_uri` in `health-sync.toml`, then run:
+
 ```bash
-export OURA_CLIENT_ID="..."
-export OURA_CLIENT_SECRET="..."
-export OURA_REDIRECT_URI="http://localhost:8484/callback"
-python3 -m health_sync auth oura
+health-sync auth oura
 ```
 
 ### Withings (OAuth2)
 
+Set `withings.client_id`, `withings.client_secret`, and `withings.redirect_uri` in `health-sync.toml`, then run:
+
 ```bash
-export WITHINGS_CLIENT_ID="..."
-export WITHINGS_CLIENT_SECRET="..."
-export WITHINGS_REDIRECT_URI="http://localhost:8485/callback"
-python3 -m health_sync auth withings
+health-sync auth withings
 ```
 
 Withings token exchange uses their `nonce` + HMAC signature protocol (implemented in this repo).
@@ -69,41 +67,54 @@ Withings token exchange uses their `nonce` + HMAC signature protocol (implemente
 
 Hevy’s API is Pro-only; you get your API key at `https://hevy.com/settings?developer`.
 
+Set `hevy.api_key` in `health-sync.toml`.
+
+5. Enable the providers you actually want to sync (defaults to disabled):
+
+- Set `[oura].enabled = true` to sync Oura
+- Set `[withings].enabled = true` to sync Withings
+- Set `[hevy].enabled = true` to sync Hevy
+
+6. Sync:
+
 ```bash
-export HEVY_API_KEY="00000000-0000-0000-0000-000000000000"
+health-sync sync
 ```
 
-5. Sync:
+## Configuration (TOML)
 
-```bash
-python3 -m health_sync sync
-```
+By default, `health-sync` reads `./health-sync.toml` (relative to your current working directory).
+You can override it via `--config /path/to/health-sync.toml`.
 
-## Environment Variables
+All config keys live in the example file: `health-sync.example.toml`.
 
 Common:
 
-- `HEALTH_SYNC_DB`: Path to SQLite DB (default: `./health.sqlite`)
+- `[app].db`: Path to SQLite DB (default: `./health.sqlite`)
 
-Optional “initial backfill” bounds:
+Oura:
 
-- `OURA_START_DATE`: YYYY-MM-DD (default: `2010-01-01`)
+- `[oura].enabled`: Set to `true` to sync Oura (default: `false`)
+- `[oura].access_token`: Oura PAT (simplest)
+- `[oura].client_id`, `[oura].client_secret`, `[oura].redirect_uri`: OAuth2
+- `[oura].start_date`: YYYY-MM-DD (default: `2010-01-01`)
+- `[oura].overlap_days`: Re-fetch overlap window on each sync (default: `7`)
 
-Provider tuning:
+Withings:
 
-- `OURA_OVERLAP_DAYS`: Re-fetch overlap window on each sync (default: `7`)
-- `WITHINGS_OVERLAP_SECONDS`: Re-fetch overlap window on each sync (default: `300`)
-- `WITHINGS_MEASTYPES`: Comma-separated integer measure type ids to sync (defaults include weight/body-comp/vitals)
-- `HEVY_OVERLAP_SECONDS`: Re-fetch overlap for events (default: `300`)
-- `HEVY_PAGE_SIZE`: 1-10 (default: `10`)
-- `HEVY_BASE_URL`: Override API base (default: `https://api.hevyapp.com`)
+- `[withings].enabled`: Set to `true` to sync Withings (default: `false`)
+- `[withings].client_id`, `[withings].client_secret`, `[withings].redirect_uri`: OAuth2
+- `[withings].overlap_seconds`: Re-fetch overlap window on each sync (default: `300`)
+- `[withings].meastypes`: Optional list of measure type ids (default is a broad list)
 
-Auth:
+Hevy:
 
-- `OURA_ACCESS_TOKEN`: Oura PAT
-- `OURA_CLIENT_ID`, `OURA_CLIENT_SECRET`, `OURA_REDIRECT_URI`
-- `WITHINGS_CLIENT_ID`, `WITHINGS_CLIENT_SECRET`, `WITHINGS_REDIRECT_URI`
-- `HEVY_API_KEY`
+- `[hevy].enabled`: Set to `true` to sync Hevy (default: `false`)
+- `[hevy].api_key`: Hevy API key
+- `[hevy].base_url`: Override API base (default: `https://api.hevyapp.com`)
+- `[hevy].overlap_seconds`: Re-fetch overlap for events (default: `300`)
+- `[hevy].page_size`: 1-10 (default: `10`)
+- `[hevy].since`: Fallback ISO timestamp used if watermark parsing fails (default: `1970-01-01T00:00:00Z`)
 
 ## Database Layout (high level)
 

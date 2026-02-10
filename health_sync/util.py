@@ -4,7 +4,6 @@ import base64
 import hashlib
 import hmac
 import json
-import os
 import threading
 import time
 import webbrowser
@@ -162,16 +161,3 @@ def open_in_browser(url: str) -> None:
         webbrowser.open(url, new=1, autoraise=True)
     except Exception:  # noqa: BLE001
         pass
-
-
-def getenv_required(name: str) -> str:
-    v = os.environ.get(name)
-    if not v:
-        raise RuntimeError(f"Missing required env var: {name}")
-    return v
-
-
-def getenv_default(name: str, default: str) -> str:
-    v = os.environ.get(name)
-    return v if v else default
-
