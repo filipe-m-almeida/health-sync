@@ -325,23 +325,34 @@ def oura_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
                 start_dt = parse_yyyy_mm_dd(start_date)
 
             end_dt = datetime.now(UTC)
-            params = {"start_datetime": dt_to_iso_z(start_dt), "end_datetime": dt_to_iso_z(end_dt)}
-            items = _oura_fetch_all(sess, access_token=access_token, path=path, params=params)
+            # Oura will reject very large time windows for time-series endpoints
+            # (e.g., requesting many years at once), so we fetch in chunks.
+            chunk_days = 30
+            chunk = timedelta(days=chunk_days)
+            print(f"- {name}: {dt_to_iso_z(start_dt)} -> {dt_to_iso_z(end_dt)} ({chunk_days}-day chunks)")
+            cur = start_dt
+            while cur < end_dt:
+                chunk_end = min(end_dt, cur + chunk)
+                params = {"start_datetime": dt_to_iso_z(cur), "end_datetime": dt_to_iso_z(chunk_end)}
+                items = _oura_fetch_all(sess, access_token=access_token, path=path, params=params)
 
-            for item in items:
-                # HR samples have timestamps; use them as stable ids.
-                ts = item.get("timestamp") or item.get("time") or item.get("datetime")
-                stable = json.dumps(item, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-                record_id = str(item.get("id") or ts or sha256_hex(stable))
-                db.upsert_record(
-                    provider=OURA_PROVIDER,
-                    resource=name,
-                    record_id=record_id,
-                    payload=item,
-                    start_time=ts,
-                    end_time=None,
-                    source_updated_at=ts,
-                )
+                for item in items:
+                    # HR samples have timestamps; use them as stable ids.
+                    ts = item.get("timestamp") or item.get("time") or item.get("datetime")
+                    stable = json.dumps(item, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+                    record_id = str(item.get("id") or ts or sha256_hex(stable))
+                    db.upsert_record(
+                        provider=OURA_PROVIDER,
+                        resource=name,
+                        record_id=record_id,
+                        payload=item,
+                        start_time=ts,
+                        end_time=None,
+                        source_updated_at=ts,
+                    )
+
+                # Advance window. We don't add an overlap here; record ids dedupe anyway.
+                cur = chunk_end
 
             db.set_sync_state(provider=OURA_PROVIDER, resource=name, watermark=dt_to_iso_z(end_dt))
 

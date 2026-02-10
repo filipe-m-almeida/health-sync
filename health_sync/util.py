@@ -71,6 +71,7 @@ def request_json(
 
     last_err: Exception | None = None
     for attempt in range(max_retries):
+        resp: requests.Response | None = None
         try:
             resp = session.request(
                 method,
@@ -80,20 +81,53 @@ def request_json(
                 data=data,
                 timeout=timeout_s,
             )
-            if resp.status_code == 429:
-                retry_after = resp.headers.get("Retry-After")
-                sleep_s = int(retry_after) if retry_after and retry_after.isdigit() else (2**attempt)
-                time.sleep(min(60, max(1, sleep_s)))
-                continue
-            if resp.status_code >= 500:
-                time.sleep(min(60, 2**attempt))
-                continue
-            resp.raise_for_status()
-            return resp.json()
         except Exception as e:  # noqa: BLE001
             last_err = e
             time.sleep(min(60, 2**attempt))
             continue
+
+        # Retry only when it makes sense.
+        if resp.status_code == 429:
+            retry_after = resp.headers.get("Retry-After")
+            sleep_s = int(retry_after) if retry_after and retry_after.isdigit() else (2**attempt)
+            time.sleep(min(60, max(1, sleep_s)))
+            continue
+        if resp.status_code >= 500:
+            time.sleep(min(60, 2**attempt))
+            continue
+
+        # Do not retry other 4xx: they're usually misconfiguration, bad params, or revoked scopes.
+        if resp.status_code >= 400:
+            trace_id = resp.headers.get("x-trace-id") or resp.headers.get("x-request-id")
+
+            detail: str | None = None
+            try:
+                j = resp.json()
+                if isinstance(j, dict):
+                    # Common error shapes: {"error": "...", "error_description": "..."}, {"detail": "..."}
+                    parts = []
+                    for k in ("error", "error_description", "detail", "message"):
+                        v = j.get(k)
+                        if isinstance(v, str) and v.strip():
+                            parts.append(f"{k}={v.strip()}")
+                    detail = ", ".join(parts) if parts else json.dumps(j, ensure_ascii=True)
+                else:
+                    detail = json.dumps(j, ensure_ascii=True)
+            except Exception:  # noqa: BLE001
+                # Fall back to a small snippet of text/html (or plain text).
+                detail = (resp.text or "").strip().replace("\n", " ")[:500] or None
+
+            msg = f"HTTP {resp.status_code} for {method} {url}"
+            if trace_id:
+                msg += f" (trace_id={trace_id})"
+            if detail:
+                msg += f": {detail}"
+            raise RuntimeError(msg)
+
+        try:
+            return resp.json()
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"Failed to parse JSON response for {method} {url}") from e
 
     raise RuntimeError(f"HTTP request failed after {max_retries} attempts: {method} {url}") from last_err
 
