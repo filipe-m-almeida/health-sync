@@ -9,34 +9,59 @@ description: Analyze the health-sync SQLite cache (health.sqlite) and its schema
 
 Use this skill to inspect and analyze the local SQLite database created by `health-sync`, including the high-level schema and repeatable SQL workflows for answering questions like "what data is present?", "what time range is covered?", and "why is a provider missing data?".
 
-## Quick Workflow
+## Core SQLite Schema (Hit The Ground Running)
 
-1. Locate the database:
-- Default path is `./health.sqlite` (or read `[app].db` in `health-sync.toml`).
-- If the DB uses WAL mode, expect sibling files `health.sqlite-wal` and `health.sqlite-shm`.
+`health-sync` uses a generic schema so upstream provider JSON can be stored without migrations.
 
-2. Open it read-only (recommended):
-```bash
-sqlite3 -readonly health.sqlite
-```
+### `records` (Main Event Store)
 
-3. Inspect the schema and what data exists:
-- Use `.tables` and `.schema` in the `sqlite3` shell.
-- Start with counts grouped by `provider` and `resource`.
+One row per provider record (raw JSON).
 
-4. Use JSON extraction for analysis:
-- `records.payload_json` stores raw provider JSON; use `json_extract(payload_json, '$.field')` and `json_each(...)` to analyze it.
+Columns:
 
-5. Debug sync coverage:
-- Use `sync_state` watermarks to understand what each provider/resource last synced.
-- Compare `sync_state.watermark` to `records.start_time`/`source_updated_at`.
+- `provider` (TEXT): `oura`, `withings`, `hevy`
+- `resource` (TEXT): provider-specific collection name (see provider reference files below)
+- `record_id` (TEXT): stable id within `(provider, resource)`
+- `start_time` (TEXT): usually ISO string or `YYYY-MM-DD` (semantics vary by provider/resource)
+- `end_time` (TEXT): usually ISO string (often null)
+- `source_updated_at` (TEXT): provider-side update timestamp when available (often null)
+- `payload_json` (TEXT): raw provider JSON
+- `fetched_at` (TEXT): when this row was written
 
-## Guardrails
+Indexes:
 
-- Treat `oauth_tokens` as secrets. Avoid printing access tokens/refresh tokens, and avoid queries like `select * from oauth_tokens;`.
-- When exploring `records`, always filter by `provider` and `resource` first. The schema is indexed on `(provider, resource, start_time)` which keeps analysis fast.
-- If you copy the DB for analysis, copy `health.sqlite`, `health.sqlite-wal`, and `health.sqlite-shm` together (or checkpoint WAL first) to get a consistent snapshot.
+- `(provider, resource, start_time)` for fast time-range queries
+- `(provider, resource, source_updated_at)` for delta/debug queries
+
+### `sync_state` (Watermarks/Cursors)
+
+Tracks incremental sync progress per `(provider, resource)`.
+
+### `oauth_tokens` (Secrets)
+
+Contains OAuth access/refresh tokens for providers that require it.
+
+Do not print or export this table.
+
+## Provider Schemas
+
+Provider-specific schemas are documented in dedicated reference files:
+
+- Oura: `references/oura.md`
+- Withings: `references/withings.md`
+- Hevy: `references/hevy.md`
+
+Those files describe:
+
+- Which `resource` values exist for that provider
+- What `record_id` is derived from
+- What `start_time`/`end_time`/`source_updated_at` mean
+- The important JSON keys inside `payload_json` (including nested arrays/objects)
 
 ## References
 
-For detailed schema notes and a SQL query cookbook, read `references/db.md`.
+Read only what you need:
+
+- For Oura questions: `references/oura.md`
+- For Withings questions: `references/withings.md`
+- For Hevy questions: `references/hevy.md`
