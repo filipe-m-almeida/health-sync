@@ -39,7 +39,7 @@ enabled = false
 # client_id = "..."
 # client_secret = "..."
 # redirect_uri = "http://127.0.0.1:8485/callback"
-# scopes = "user.metrics,user.activity,user.sleep"
+# scopes = "user.metrics,user.activity"
 #
 # Sync tuning:
 # overlap_seconds = 300

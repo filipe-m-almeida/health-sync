@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import secrets
 import time
 from datetime import UTC, datetime, timedelta
@@ -46,8 +47,22 @@ def _withings_redirect(cfg: LoadedConfig) -> tuple[str, int, str]:
 
 
 def _withings_scopes(cfg: LoadedConfig) -> str:
-    # Most people want metrics + activity + sleep.
-    return cfg.config.withings.scopes
+    # Withings scopes are comma-separated. Sleep endpoints are covered by
+    # `user.activity` (there is no `user.sleep` scope).
+    raw = cfg.config.withings.scopes
+    parts = [p.strip() for p in re.split(r"[\\s,]+", raw) if p and p.strip()]
+    out: list[str] = []
+    for p in parts:
+        if p == "user.sleep":
+            # Backwards-compat for older configs/docs.
+            p = "user.activity"
+        if p not in out:
+            out.append(p)
+
+    if "user.activity" in out and "user.sleep" in parts:
+        print("Note: Withings scope `user.sleep` is not valid; using `user.activity` instead.")
+
+    return ",".join(out) if out else raw
 
 
 def _withings_signature_for(secret: str, *, action: str, client_id: str, timestamp: int | None = None, nonce: str | None = None) -> str:

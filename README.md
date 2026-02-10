@@ -105,6 +105,7 @@ Withings:
 
 - `[withings].enabled`: Set to `true` to sync Withings (default: `false`)
 - `[withings].client_id`, `[withings].client_secret`, `[withings].redirect_uri`: OAuth2
+- `[withings].scopes`: OAuth scopes (default: `user.metrics,user.activity`). Note: sleep endpoints are included in `user.activity` (there is no `user.sleep` scope).
 - `[withings].overlap_seconds`: Re-fetch overlap window on each sync (default: `300`)
 - `[withings].meastypes`: Optional list of measure type ids (default is a broad list)
 

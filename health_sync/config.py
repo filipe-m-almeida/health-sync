@@ -42,7 +42,9 @@ class WithingsConfig:
     client_id: str | None = None
     client_secret: str | None = None
     redirect_uri: str = "http://127.0.0.1:8485/callback"
-    scopes: str = "user.metrics,user.activity,user.sleep"
+    # Withings scopes are comma-separated. Sleep endpoints are covered by `user.activity`
+    # (there is no `user.sleep` scope).
+    scopes: str = "user.metrics,user.activity"
 
     # Sync tuning
     overlap_seconds: int = 300
