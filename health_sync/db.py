@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
+import warnings
 from dataclasses import dataclass
 from typing import Any, Iterable, Iterator
 
@@ -149,7 +150,7 @@ class HealthSyncDb:
         ).fetchone()
         if row is None:
             return None
-        extra = json.loads(row["extra_json"]) if row["extra_json"] else None
+        extra = self._json_loads_or_none(row["extra_json"], context=f"sync_state {provider}/{resource}")
         return SyncState(provider=row["provider"], resource=row["resource"], watermark=row["watermark"], cursor=row["cursor"], extra=extra)
 
     def set_sync_state(
@@ -181,7 +182,7 @@ class HealthSyncDb:
         if row is None:
             return None
         out = dict(row)
-        out["extra"] = json.loads(out["extra_json"]) if out.get("extra_json") else None
+        out["extra"] = self._json_loads_or_none(out.get("extra_json"), context=f"oauth_tokens {provider}")
         return out
 
     def set_oauth_token(
@@ -221,6 +222,21 @@ class HealthSyncDb:
             "SELECT provider, resource, COUNT(*) AS cnt FROM records GROUP BY provider, resource ORDER BY provider, resource;"
         )
 
+    @staticmethod
+    def _json_loads_or_none(v: str | None, *, context: str) -> dict[str, Any] | None:
+        if not v:
+            return None
+        try:
+            j = json.loads(v)
+        except json.JSONDecodeError:
+            warnings.warn(
+                f"Invalid JSON in {context}; ignoring stored metadata.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return None
+        return j if isinstance(j, dict) else None
+
     @contextlib.contextmanager
     def transaction(self) -> Iterator[None]:
         self._c.execute("BEGIN;")
@@ -231,4 +247,3 @@ class HealthSyncDb:
             raise
         else:
             self._c.commit()
-

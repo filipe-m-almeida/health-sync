@@ -183,3 +183,7 @@ needing migrations for every upstream schema change.
 - Hevy supports true delta sync for workouts via `/v1/workouts/events` (updated/deleted).
 - Strava activity sync uses `after` (epoch seconds) plus a configurable overlap window.
 - Eight Sleep sync is based on unofficial endpoints and may break if Eight Sleep changes API behavior.
+
+## License
+
+MIT. See `LICENSE`.

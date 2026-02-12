@@ -12,6 +12,26 @@ from .providers.strava import strava_auth, strava_sync
 from .providers.withings import withings_auth, withings_sync
 
 
+def _add_common_cli_flags(parser: argparse.ArgumentParser, *, suppress_defaults: bool = False) -> None:
+    config_default: str | object = DEFAULT_CONFIG_FILENAME
+    db_default: str | None | object = None
+    if suppress_defaults:
+        # Prevent subparser defaults from overwriting top-level values.
+        config_default = argparse.SUPPRESS
+        db_default = argparse.SUPPRESS
+
+    parser.add_argument(
+        "--config",
+        default=config_default,
+        help=f"Config file path (default: ./{DEFAULT_CONFIG_FILENAME})",
+    )
+    parser.add_argument(
+        "--db",
+        default=db_default,
+        help="SQLite DB path (default: from config [app].db or ./health.sqlite)",
+    )
+
+
 def cmd_init_db(args: argparse.Namespace, cfg: LoadedConfig) -> int:
     with HealthSyncDb(args.db) as db:
         db.init()
@@ -112,62 +132,26 @@ def build_parser() -> argparse.ArgumentParser:
         prog="health-sync",
         description="Sync Oura/Withings/Hevy/Strava/Eight Sleep data to SQLite.",
     )
-    # NOTE: We add --db both at the top-level and on each subcommand so it can be
+    # NOTE: We add common flags both at the top-level and on each subcommand so they can be
     # passed either before or after the subcommand (argparse normally requires global
     # options to appear before the subcommand token).
-    p.add_argument(
-        "--config",
-        default=DEFAULT_CONFIG_FILENAME,
-        help=f"Config file path (default: ./{DEFAULT_CONFIG_FILENAME})",
-    )
-    p.add_argument(
-        "--db",
-        default=None,
-        help="SQLite DB path (default: from config [app].db or ./health.sqlite)",
-    )
+    _add_common_cli_flags(p, suppress_defaults=False)
 
     sub = p.add_subparsers(dest="cmd", required=True)
 
     p_init = sub.add_parser("init-db", help="Create tables if missing.")
-    p_init.add_argument(
-        "--config",
-        default=DEFAULT_CONFIG_FILENAME,
-        help=f"Config file path (default: ./{DEFAULT_CONFIG_FILENAME})",
-    )
-    p_init.add_argument(
-        "--db",
-        default=None,
-        help="SQLite DB path (default: from config [app].db or ./health.sqlite)",
-    )
+    _add_common_cli_flags(p_init, suppress_defaults=True)
     p_init.set_defaults(func=cmd_init_db)
 
     p_auth = sub.add_parser("auth", help="Run OAuth2 auth flow for a provider.")
-    p_auth.add_argument(
-        "--config",
-        default=DEFAULT_CONFIG_FILENAME,
-        help=f"Config file path (default: ./{DEFAULT_CONFIG_FILENAME})",
-    )
-    p_auth.add_argument(
-        "--db",
-        default=None,
-        help="SQLite DB path (default: from config [app].db or ./health.sqlite)",
-    )
+    _add_common_cli_flags(p_auth, suppress_defaults=True)
     p_auth.add_argument("provider", choices=["oura", "withings", "strava"])
     p_auth.add_argument("--listen-host", default="127.0.0.1")
     p_auth.add_argument("--listen-port", type=int, default=0, help="0 = pick provider default port")
     p_auth.set_defaults(func=cmd_auth)
 
     p_sync = sub.add_parser("sync", help="Run synchronization (full backfill on first run, delta afterwards).")
-    p_sync.add_argument(
-        "--config",
-        default=DEFAULT_CONFIG_FILENAME,
-        help=f"Config file path (default: ./{DEFAULT_CONFIG_FILENAME})",
-    )
-    p_sync.add_argument(
-        "--db",
-        default=None,
-        help="SQLite DB path (default: from config [app].db or ./health.sqlite)",
-    )
+    _add_common_cli_flags(p_sync, suppress_defaults=True)
     p_sync.add_argument(
         "--providers",
         nargs="*",
@@ -177,16 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.set_defaults(func=cmd_sync)
 
     p_status = sub.add_parser("status", help="Show sync watermarks and record counts.")
-    p_status.add_argument(
-        "--config",
-        default=DEFAULT_CONFIG_FILENAME,
-        help=f"Config file path (default: ./{DEFAULT_CONFIG_FILENAME})",
-    )
-    p_status.add_argument(
-        "--db",
-        default=None,
-        help="SQLite DB path (default: from config [app].db or ./health.sqlite)",
-    )
+    _add_common_cli_flags(p_status, suppress_defaults=True)
     p_status.set_defaults(func=cmd_status)
 
     return p

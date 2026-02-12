@@ -7,8 +7,10 @@ import json
 import threading
 import time
 import webbrowser
+import warnings
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -55,6 +57,29 @@ def basic_auth_header(client_id: str, client_secret: str) -> str:
     return f"Basic {b}"
 
 
+def _parse_retry_after_seconds(v: str | None) -> int | None:
+    if v is None:
+        return None
+    s = v.strip()
+    if not s:
+        return None
+    if s.isdigit():
+        return max(1, int(s))
+    try:
+        dt = parsedate_to_datetime(s)
+    except (TypeError, ValueError, OverflowError):
+        warnings.warn(
+            f"Could not parse Retry-After header value {s!r}; using exponential backoff.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    delta_s = int((dt.astimezone(UTC) - datetime.now(UTC)).total_seconds())
+    return max(1, delta_s)
+
+
 def request_json(
     session: requests.Session,
     method: str,
@@ -93,7 +118,7 @@ def request_json(
         # Retry only when it makes sense.
         if resp.status_code == 429:
             retry_after = resp.headers.get("Retry-After")
-            sleep_s = int(retry_after) if retry_after and retry_after.isdigit() else (2**attempt)
+            sleep_s = _parse_retry_after_seconds(retry_after) or (2**attempt)
             time.sleep(min(60, max(1, sleep_s)))
             continue
         if resp.status_code >= 500:
