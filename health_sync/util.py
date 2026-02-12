@@ -143,6 +143,49 @@ class OAuthResult:
     error: str | None
 
 
+def _oauth_result_from_paste(raw: str) -> OAuthResult | None:
+    s = raw.strip()
+    if not s:
+        return None
+
+    parsed_qs_values: list[dict[str, list[str]]] = []
+    looks_structured = False
+    if "://" in s:
+        looks_structured = True
+        u = urlparse(s)
+        if u.query:
+            parsed_qs_values.append(parse_qs(u.query, keep_blank_values=True))
+        if u.fragment:
+            parsed_qs_values.append(parse_qs(u.fragment, keep_blank_values=True))
+    elif s.startswith("/"):
+        looks_structured = True
+        u = urlparse(s)
+        if u.query:
+            parsed_qs_values.append(parse_qs(u.query, keep_blank_values=True))
+    elif s.startswith("?"):
+        looks_structured = True
+        parsed_qs_values.append(parse_qs(s[1:], keep_blank_values=True))
+    elif "=" in s and ("&" in s or s.startswith(("code=", "state=", "error="))):
+        looks_structured = True
+        parsed_qs_values.append(parse_qs(s, keep_blank_values=True))
+
+    for qs in parsed_qs_values:
+        code = (qs.get("code") or [None])[0]
+        state = (qs.get("state") or [None])[0]
+        error = (qs.get("error") or [None])[0]
+        if code is not None or state is not None or error is not None:
+            return OAuthResult(code=code or "", state=state, error=error)
+
+    if looks_structured:
+        # User pasted URL/query-looking input but there was no recognizable OAuth field.
+        return None
+
+    # Fallback: treat paste as a raw code string.
+    if any(ch.isspace() for ch in s):
+        return None
+    return OAuthResult(code=s, state=None, error=None)
+
+
 def oauth_listen_for_code(
     *,
     listen_host: str,
@@ -152,6 +195,16 @@ def oauth_listen_for_code(
 ) -> OAuthResult:
     event = threading.Event()
     result: dict[str, Any] = {}
+    result_lock = threading.Lock()
+
+    def _set_result(*, code: str | None, state: str | None, error: str | None) -> None:
+        with result_lock:
+            if event.is_set():
+                return
+            result["code"] = code
+            result["state"] = state
+            result["error"] = error
+            event.set()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -167,30 +220,54 @@ def oauth_listen_for_code(
                 return
 
             qs = parse_qs(parsed.query)
-            result["code"] = (qs.get("code") or [None])[0]
-            result["state"] = (qs.get("state") or [None])[0]
-            result["error"] = (qs.get("error") or [None])[0]
+            _set_result(
+                code=(qs.get("code") or [None])[0],
+                state=(qs.get("state") or [None])[0],
+                error=(qs.get("error") or [None])[0],
+            )
 
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
             self.wfile.write(b"Authorization received. You can close this tab/window and return to the terminal.\n")
-            event.set()
+
+    def _read_manual_input() -> None:
+        while not event.is_set():
+            try:
+                raw = input()
+            except EOFError:
+                return
+            except Exception:  # noqa: BLE001
+                return
+
+            parsed = _oauth_result_from_paste(raw)
+            if parsed is None:
+                print("Input did not contain a recognizable OAuth callback URL or code; still waiting...")
+                continue
+            _set_result(code=parsed.code, state=parsed.state, error=parsed.error)
+            return
 
     httpd = HTTPServer((listen_host, listen_port), Handler)
+    callback_port = int(httpd.server_address[1])
 
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
+    t_stdin = threading.Thread(target=_read_manual_input, daemon=True)
+    t_stdin.start()
+
+    print(f"Waiting for OAuth redirect on http://{listen_host}:{callback_port}{callback_path}")
+    print("You may also paste the final callback URL (or just the `code`) here and press Enter.")
     try:
         ok = event.wait(timeout_s)
         if not ok:
-            raise TimeoutError("Timed out waiting for OAuth redirect")
+            raise TimeoutError("Timed out waiting for OAuth redirect or manual code input")
         code = result.get("code")
         if not code:
             return OAuthResult(code="", state=result.get("state"), error=result.get("error") or "missing_code")
         return OAuthResult(code=code, state=result.get("state"), error=result.get("error"))
     finally:
         httpd.shutdown()
+        httpd.server_close()
 
 
 def open_in_browser(url: str) -> None:

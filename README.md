@@ -41,6 +41,11 @@ health-sync init-db
 
 4. Authenticate providers (choose what you use):
 
+Auth UX note:
+
+- During `health-sync auth ...`, the local callback listener still runs as before.
+- If callback routing is inconvenient (remote host, separate browser device), you can paste the final redirected callback URL (or just `code`) directly into the terminal.
+
 ### Oura
 
 Option A (simplest): Personal Access Token
