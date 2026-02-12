@@ -1,2 +1,1 @@
-__all__ = ["oura", "withings", "hevy"]
-
+__all__ = ["oura", "withings", "hevy", "strava", "eightsleep"]

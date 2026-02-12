@@ -5,8 +5,10 @@ import sys
 
 from .config import DEFAULT_CONFIG_FILENAME, LoadedConfig, load_config
 from .db import HealthSyncDb
+from .providers.eightsleep import eightsleep_sync
 from .providers.hevy import hevy_sync
 from .providers.oura import oura_auth, oura_sync
+from .providers.strava import strava_auth, strava_sync
 from .providers.withings import withings_auth, withings_sync
 
 
@@ -26,16 +28,21 @@ def cmd_auth(args: argparse.Namespace, cfg: LoadedConfig) -> int:
         if args.provider == "withings":
             withings_auth(db, cfg, listen_host=args.listen_host, listen_port=args.listen_port)
             return 0
+        if args.provider == "strava":
+            strava_auth(db, cfg, listen_host=args.listen_host, listen_port=args.listen_port)
+            return 0
         raise ValueError(f"Unknown provider: {args.provider}")
 
 
 def cmd_sync(args: argparse.Namespace, cfg: LoadedConfig) -> int:
-    all_providers = ["oura", "withings", "hevy"]
+    all_providers = ["oura", "withings", "hevy", "strava", "eightsleep"]
 
     enabled = {
         "oura": bool(cfg.config.oura.enabled),
         "withings": bool(cfg.config.withings.enabled),
         "hevy": bool(cfg.config.hevy.enabled),
+        "strava": bool(cfg.config.strava.enabled),
+        "eightsleep": bool(cfg.config.eightsleep.enabled),
     }
 
     # Default behavior: only sync providers explicitly enabled in config.
@@ -75,6 +82,10 @@ def cmd_sync(args: argparse.Namespace, cfg: LoadedConfig) -> int:
                 withings_sync(db, cfg)
             elif p == "hevy":
                 hevy_sync(db, cfg)
+            elif p == "strava":
+                strava_sync(db, cfg)
+            elif p == "eightsleep":
+                eightsleep_sync(db, cfg)
             else:
                 raise ValueError(f"Unknown provider: {p}")
 
@@ -97,7 +108,10 @@ def cmd_status(args: argparse.Namespace, cfg: LoadedConfig) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="health-sync", description="Sync Oura/Withings/Hevy data to SQLite.")
+    p = argparse.ArgumentParser(
+        prog="health-sync",
+        description="Sync Oura/Withings/Hevy/Strava/Eight Sleep data to SQLite.",
+    )
     # NOTE: We add --db both at the top-level and on each subcommand so it can be
     # passed either before or after the subcommand (argparse normally requires global
     # options to appear before the subcommand token).
@@ -138,7 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="SQLite DB path (default: from config [app].db or ./health.sqlite)",
     )
-    p_auth.add_argument("provider", choices=["oura", "withings"])
+    p_auth.add_argument("provider", choices=["oura", "withings", "strava"])
     p_auth.add_argument("--listen-host", default="127.0.0.1")
     p_auth.add_argument("--listen-port", type=int, default=0, help="0 = pick provider default port")
     p_auth.set_defaults(func=cmd_auth)
@@ -157,7 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument(
         "--providers",
         nargs="*",
-        choices=["oura", "withings", "hevy"],
+        choices=["oura", "withings", "hevy", "strava", "eightsleep"],
         help="Subset of providers to sync (still requires [provider].enabled = true in config)",
     )
     p_sync.set_defaults(func=cmd_sync)

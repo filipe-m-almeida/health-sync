@@ -5,13 +5,15 @@ Sync your health data from:
 - Oura Cloud API (v2)
 - Withings Advanced Health Data API
 - Hevy public API (Pro-only, `api-key` header)
+- Strava API (OAuth2)
+- Eight Sleep (unofficial API)
 
 into a local SQLite database.
 
 This repo was scaffolded as a pragmatic “local cache” tool:
 
 - First run: backfills history (bounded by optional start-date config values).
-- Subsequent runs: fetch deltas (Withings `lastupdate`, Hevy workout events, Oura date windows with overlap).
+- Subsequent runs: fetch deltas (Withings `lastupdate`, Hevy workout events, Oura date windows with overlap, Strava activity windows with overlap, Eight Sleep trend windows with overlap).
 
 ## Quick Start
 
@@ -69,11 +71,27 @@ Hevy’s API is Pro-only; you get your API key at `https://hevy.com/settings?dev
 
 Set `hevy.api_key` in `health-sync.toml`.
 
+### Strava (OAuth2)
+
+Set `strava.client_id`, `strava.client_secret`, and `strava.redirect_uri` in `health-sync.toml`, then run:
+
+```bash
+health-sync auth strava
+```
+
+### Eight Sleep
+
+Set `eightsleep.email` and `eightsleep.password` in `health-sync.toml`.
+
+This provider uses unofficial endpoints and authenticates during `health-sync sync` (no separate browser auth step).
+
 5. Enable the providers you actually want to sync (defaults to disabled):
 
 - Set `[oura].enabled = true` to sync Oura
 - Set `[withings].enabled = true` to sync Withings
 - Set `[hevy].enabled = true` to sync Hevy
+- Set `[strava].enabled = true` to sync Strava
+- Set `[eightsleep].enabled = true` to sync Eight Sleep
 
 6. Sync:
 
@@ -118,6 +136,29 @@ Hevy:
 - `[hevy].page_size`: 1-10 (default: `10`)
 - `[hevy].since`: Fallback ISO timestamp used if watermark parsing fails (default: `1970-01-01T00:00:00Z`)
 
+Strava:
+
+- `[strava].enabled`: Set to `true` to sync Strava (default: `false`)
+- `[strava].access_token`: Optional static bearer token
+- `[strava].client_id`, `[strava].client_secret`, `[strava].redirect_uri`: OAuth2
+- `[strava].scopes`: OAuth scopes (default: `read,activity:read_all`)
+- `[strava].approval_prompt`: OAuth approval prompt (default: `auto`)
+- `[strava].start_date`: YYYY-MM-DD (default: `2010-01-01`)
+- `[strava].overlap_seconds`: Re-fetch overlap window on each sync (default: `604800`)
+- `[strava].page_size`: 1-200 (default: `100`)
+
+Eight Sleep:
+
+- `[eightsleep].enabled`: Set to `true` to sync Eight Sleep (default: `false`)
+- `[eightsleep].access_token`: Optional static bearer token
+- `[eightsleep].email`, `[eightsleep].password`: Account credentials for token retrieval
+- `[eightsleep].client_id`, `[eightsleep].client_secret`: Optional auth client overrides
+- `[eightsleep].auth_url`: Auth host (default: `https://auth-api.8slp.net/v1/tokens`)
+- `[eightsleep].client_api_url`: Client API host (default: `https://client-api.8slp.net/v1`)
+- `[eightsleep].timezone`: Timezone used for trends query windows (default: `UTC`)
+- `[eightsleep].start_date`: YYYY-MM-DD (default: `2010-01-01`)
+- `[eightsleep].overlap_days`: Re-fetch overlap days on each sync (default: `2`)
+
 ## Database Layout (high level)
 
 - `records`: generic JSON records keyed by `(provider, resource, record_id)`.
@@ -134,3 +175,5 @@ needing migrations for every upstream schema change.
   watermark.
 - Withings supports true delta sync using `lastupdate` and `modified` timestamps.
 - Hevy supports true delta sync for workouts via `/v1/workouts/events` (updated/deleted).
+- Strava activity sync uses `after` (epoch seconds) plus a configurable overlap window.
+- Eight Sleep sync is based on unofficial endpoints and may break if Eight Sleep changes API behavior.

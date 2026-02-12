@@ -63,11 +63,14 @@ def request_json(
     headers: dict[str, str] | None = None,
     params: dict[str, Any] | None = None,
     data: dict[str, Any] | None = None,
+    json_data: dict[str, Any] | None = None,
     timeout_s: int = 60,
     max_retries: int = 5,
 ) -> dict[str, Any]:
     headers = headers or {}
     params = params or {}
+    if data is not None and json_data is not None:
+        raise ValueError("request_json: pass only one of `data` or `json_data`")
 
     last_err: Exception | None = None
     for attempt in range(max_retries):
@@ -79,6 +82,7 @@ def request_json(
                 headers=headers,
                 params=params,
                 data=data,
+                json=json_data,
                 timeout=timeout_s,
             )
         except Exception as e:  # noqa: BLE001

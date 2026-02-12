@@ -61,3 +61,44 @@ enabled = false
 # overlap_seconds = 300
 # page_size = 10  # 1-10
 # since = "1970-01-01T00:00:00Z"
+
+[strava]
+# Set to true to sync this provider.
+enabled = false
+
+# Option A: static access token (advanced; usually short-lived)
+# access_token = "..."
+#
+# Option B: OAuth2 (recommended)
+# client_id = "..."
+# client_secret = "..."
+# redirect_uri = "http://127.0.0.1:8486/callback"
+# scopes = "read,activity:read_all"
+# approval_prompt = "auto"
+#
+# Sync tuning:
+# start_date = "2010-01-01"  # YYYY-MM-DD
+# overlap_seconds = 604800    # 7 days
+# page_size = 100             # 1-200
+
+[eightsleep]
+# Set to true to sync this provider.
+enabled = false
+
+# Option A: static bearer token (advanced/unstable)
+# access_token = "..."
+#
+# Option B: username/password grant (recommended)
+# email = "you@example.com"
+# password = "..."
+#
+# Optional overrides for auth client / hosts:
+# client_id = "..."
+# client_secret = "..."
+# auth_url = "https://auth-api.8slp.net/v1/tokens"
+# client_api_url = "https://client-api.8slp.net/v1"
+#
+# Sync tuning:
+# timezone = "UTC"
+# start_date = "2010-01-01"  # YYYY-MM-DD
+# overlap_days = 2

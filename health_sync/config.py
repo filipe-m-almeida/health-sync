@@ -65,11 +65,54 @@ class HevyConfig:
 
 
 @dataclass(frozen=True)
+class StravaConfig:
+    enabled: bool = False
+
+    # If set, this is treated as a static access token.
+    access_token: str | None = None
+
+    # OAuth2 (Authorization Code + refresh token)
+    client_id: str | None = None
+    client_secret: str | None = None
+    redirect_uri: str = "http://127.0.0.1:8486/callback"
+    scopes: str = "read,activity:read_all"
+    approval_prompt: str = "auto"
+
+    # Sync tuning
+    start_date: str = "2010-01-01"
+    overlap_seconds: int = 604800
+    page_size: int = 100
+
+
+@dataclass(frozen=True)
+class EightSleepConfig:
+    enabled: bool = False
+
+    # Option A: static bearer token (advanced/unstable API usage)
+    access_token: str | None = None
+
+    # Option B: username/password grant
+    email: str | None = None
+    password: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+
+    # API hosts / sync tuning
+    timezone: str = "UTC"
+    auth_url: str = "https://auth-api.8slp.net/v1/tokens"
+    client_api_url: str = "https://client-api.8slp.net/v1"
+    start_date: str = "2010-01-01"
+    overlap_days: int = 2
+
+
+@dataclass(frozen=True)
 class Config:
     app: AppConfig = field(default_factory=AppConfig)
     oura: OuraConfig = field(default_factory=OuraConfig)
     withings: WithingsConfig = field(default_factory=WithingsConfig)
     hevy: HevyConfig = field(default_factory=HevyConfig)
+    strava: StravaConfig = field(default_factory=StravaConfig)
+    eightsleep: EightSleepConfig = field(default_factory=EightSleepConfig)
 
 
 @dataclass(frozen=True)
@@ -176,10 +219,14 @@ def load_config(path: str | Path | None = None) -> LoadedConfig:
     raw_oura = _as_dict(raw.get("oura"))
     raw_withings = _as_dict(raw.get("withings"))
     raw_hevy = _as_dict(raw.get("hevy"))
+    raw_strava = _as_dict(raw.get("strava"))
+    raw_eightsleep = _as_dict(raw.get("eightsleep"))
 
     oura_enabled = _get_bool(raw_oura, "enabled")
     withings_enabled = _get_bool(raw_withings, "enabled")
     hevy_enabled = _get_bool(raw_hevy, "enabled")
+    strava_enabled = _get_bool(raw_strava, "enabled")
+    eightsleep_enabled = _get_bool(raw_eightsleep, "enabled")
 
     app = AppConfig(
         db=_get_str(raw_app, "db") or AppConfig().db,
@@ -211,8 +258,47 @@ def load_config(path: str | Path | None = None) -> LoadedConfig:
         page_size=_get_int(raw_hevy, "page_size") or HevyConfig().page_size,
         since=_get_str(raw_hevy, "since") or HevyConfig().since,
     )
+    strava_overlap_seconds = _get_int(raw_strava, "overlap_seconds")
+    strava_page_size = _get_int(raw_strava, "page_size")
+    strava = StravaConfig(
+        enabled=strava_enabled if strava_enabled is not None else StravaConfig().enabled,
+        access_token=_get_str(raw_strava, "access_token"),
+        client_id=_get_str(raw_strava, "client_id"),
+        client_secret=_get_str(raw_strava, "client_secret"),
+        redirect_uri=_get_str(raw_strava, "redirect_uri") or StravaConfig().redirect_uri,
+        scopes=_get_str(raw_strava, "scopes") or StravaConfig().scopes,
+        approval_prompt=_get_str(raw_strava, "approval_prompt") or StravaConfig().approval_prompt,
+        start_date=_get_str(raw_strava, "start_date") or StravaConfig().start_date,
+        overlap_seconds=strava_overlap_seconds if strava_overlap_seconds is not None else StravaConfig().overlap_seconds,
+        page_size=strava_page_size if strava_page_size is not None else StravaConfig().page_size,
+    )
+    eightsleep_overlap_days = _get_int(raw_eightsleep, "overlap_days")
+    eightsleep = EightSleepConfig(
+        enabled=eightsleep_enabled if eightsleep_enabled is not None else EightSleepConfig().enabled,
+        access_token=_get_str(raw_eightsleep, "access_token"),
+        email=_get_str(raw_eightsleep, "email"),
+        password=_get_str(raw_eightsleep, "password"),
+        client_id=_get_str(raw_eightsleep, "client_id"),
+        client_secret=_get_str(raw_eightsleep, "client_secret"),
+        timezone=_get_str(raw_eightsleep, "timezone") or EightSleepConfig().timezone,
+        auth_url=_get_str(raw_eightsleep, "auth_url") or EightSleepConfig().auth_url,
+        client_api_url=_get_str(raw_eightsleep, "client_api_url") or EightSleepConfig().client_api_url,
+        start_date=_get_str(raw_eightsleep, "start_date") or EightSleepConfig().start_date,
+        overlap_days=eightsleep_overlap_days if eightsleep_overlap_days is not None else EightSleepConfig().overlap_days,
+    )
 
-    return LoadedConfig(path=cfg_path, exists=True, config=Config(app=app, oura=oura, withings=withings, hevy=hevy))
+    return LoadedConfig(
+        path=cfg_path,
+        exists=True,
+        config=Config(
+            app=app,
+            oura=oura,
+            withings=withings,
+            hevy=hevy,
+            strava=strava,
+            eightsleep=eightsleep,
+        ),
+    )
 
 
 def require_str(cfg: LoadedConfig, v: str | None, *, key: str) -> str:
