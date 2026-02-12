@@ -92,9 +92,11 @@ enabled = false
 # email = "you@example.com"
 # password = "..."
 #
-# Optional overrides for auth client / hosts:
+# Required for password-grant flow:
 # client_id = "..."
 # client_secret = "..."
+#
+# Optional overrides for API hosts:
 # auth_url = "https://auth-api.8slp.net/v1/tokens"
 # client_api_url = "https://client-api.8slp.net/v1"
 #

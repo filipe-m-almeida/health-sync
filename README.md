@@ -86,7 +86,8 @@ health-sync auth strava
 
 ### Eight Sleep
 
-Set `eightsleep.email` and `eightsleep.password` in `health-sync.toml`.
+Set `eightsleep.email`, `eightsleep.password`, `eightsleep.client_id`, and
+`eightsleep.client_secret` in `health-sync.toml`.
 
 This provider uses unofficial endpoints and authenticates during `health-sync sync` (no separate browser auth step).
 
@@ -157,7 +158,7 @@ Eight Sleep:
 - `[eightsleep].enabled`: Set to `true` to sync Eight Sleep (default: `false`)
 - `[eightsleep].access_token`: Optional static bearer token
 - `[eightsleep].email`, `[eightsleep].password`: Account credentials for token retrieval
-- `[eightsleep].client_id`, `[eightsleep].client_secret`: Optional auth client overrides
+- `[eightsleep].client_id`, `[eightsleep].client_secret`: Required for password-grant auth flow
 - `[eightsleep].auth_url`: Auth host (default: `https://auth-api.8slp.net/v1/tokens`)
 - `[eightsleep].client_api_url`: Client API host (default: `https://client-api.8slp.net/v1`)
 - `[eightsleep].timezone`: Timezone used for trends query windows (default: `UTC`)

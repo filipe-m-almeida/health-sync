@@ -12,11 +12,6 @@ from ..util import iso_to_dt, parse_yyyy_mm_dd, request_json, sha256_hex, utc_no
 
 EIGHTSLEEP_PROVIDER = "eightsleep"
 
-# Eight Sleep has no stable public API docs for this flow. These defaults match
-# currently used endpoints in active open-source integrations.
-EIGHTSLEEP_KNOWN_CLIENT_ID = "0894c7f33bb94800a03f1f4df13a4f38"
-EIGHTSLEEP_KNOWN_CLIENT_SECRET = "REDACTED_REMOVED_FROM_HISTORY"
-
 
 def _eightsleep_auth_headers() -> dict[str, str]:
     return {
@@ -33,14 +28,6 @@ def _eightsleep_api_headers(access_token: str) -> dict[str, str]:
         "User-Agent": "health-sync/0.1 (+local sqlite cache)",
         "Accept": "application/json",
     }
-
-
-def _eightsleep_client_id(cfg: LoadedConfig) -> str:
-    return cfg.config.eightsleep.client_id or EIGHTSLEEP_KNOWN_CLIENT_ID
-
-
-def _eightsleep_client_secret(cfg: LoadedConfig) -> str:
-    return cfg.config.eightsleep.client_secret or EIGHTSLEEP_KNOWN_CLIENT_SECRET
 
 
 def _parse_date(s: str | None) -> datetime | None:
@@ -76,6 +63,8 @@ def _eightsleep_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: req
     auth_url = cfg.config.eightsleep.auth_url.rstrip("/")
     email = require_str(cfg, cfg.config.eightsleep.email, key="eightsleep.email")
     password = require_str(cfg, cfg.config.eightsleep.password, key="eightsleep.password")
+    client_id = require_str(cfg, cfg.config.eightsleep.client_id, key="eightsleep.client_id")
+    client_secret = require_str(cfg, cfg.config.eightsleep.client_secret, key="eightsleep.client_secret")
 
     token = request_json(
         sess,
@@ -83,8 +72,8 @@ def _eightsleep_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: req
         auth_url,
         headers=_eightsleep_auth_headers(),
         json_data={
-            "client_id": _eightsleep_client_id(cfg),
-            "client_secret": _eightsleep_client_secret(cfg),
+            "client_id": client_id,
+            "client_secret": client_secret,
             "grant_type": "password",
             "username": email,
             "password": password,
