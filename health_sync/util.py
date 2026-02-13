@@ -36,6 +36,37 @@ def dt_to_iso_z(dt: datetime) -> str:
     return dt.isoformat().replace("+00:00", "Z")
 
 
+def to_epoch_seconds(v: object) -> int | None:
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(v)
+    if isinstance(v, datetime):
+        dt = v if v.tzinfo is not None else v.replace(tzinfo=UTC)
+        return int(dt.astimezone(UTC).timestamp())
+
+    s = str(v).strip()
+    if not s:
+        return None
+    if s.isdigit():
+        return int(s)
+
+    if len(s) == 10 and s[4:5] == "-" and s[7:8] == "-":
+        try:
+            return int(parse_yyyy_mm_dd(s).timestamp())
+        except Exception:  # noqa: BLE001
+            return None
+
+    try:
+        return int(iso_to_dt(s).timestamp())
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def date_to_str(d: datetime) -> str:
     return d.date().isoformat()
 

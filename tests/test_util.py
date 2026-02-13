@@ -5,7 +5,7 @@ import warnings
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 
-from health_sync.util import _parse_retry_after_seconds
+from health_sync.util import _parse_retry_after_seconds, to_epoch_seconds
 
 
 class RetryAfterParsingTests(unittest.TestCase):
@@ -26,6 +26,17 @@ class RetryAfterParsingTests(unittest.TestCase):
             parsed = _parse_retry_after_seconds("nonsense")
         self.assertIsNone(parsed)
         self.assertTrue(any("Could not parse Retry-After header value" in str(w.message) for w in caught))
+
+
+class EpochParsingTests(unittest.TestCase):
+    def test_epoch_parsing_accepts_epoch_string(self) -> None:
+        self.assertEqual(to_epoch_seconds("1770715852"), 1770715852)
+
+    def test_epoch_parsing_accepts_iso(self) -> None:
+        self.assertEqual(to_epoch_seconds("2026-02-10T09:30:52Z"), 1770715852)
+
+    def test_epoch_parsing_accepts_date(self) -> None:
+        self.assertEqual(to_epoch_seconds("2026-02-10"), 1770681600)
 
 
 if __name__ == "__main__":

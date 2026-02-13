@@ -123,110 +123,121 @@ def eightsleep_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
 
     print("Syncing Eight Sleep...")
 
-    with db.transaction():
-        me_resp = request_json(sess, "GET", f"{client_api_url}/users/me", headers=headers)
-        me_user = me_resp.get("user") if isinstance(me_resp, dict) else None
-        me_id = str((me_user or {}).get("id") or "me")
+    me_resp = request_json(sess, "GET", f"{client_api_url}/users/me", headers=headers)
+    me_user = me_resp.get("user") if isinstance(me_resp, dict) else None
+    me_id = str((me_user or {}).get("id") or "me")
 
-        db.upsert_record(
-            provider=EIGHTSLEEP_PROVIDER,
-            resource="users_me",
-            record_id=me_id,
-            payload=me_resp,
-            start_time=None,
-            end_time=None,
-            source_updated_at=utc_now_iso(),
-        )
-        db.set_sync_state(provider=EIGHTSLEEP_PROVIDER, resource="users_me", watermark=utc_now_iso())
-
-        user_ids: set[str] = set()
-        if me_id != "me":
-            user_ids.add(me_id)
-
-        device_ids = (me_user or {}).get("devices")
-        device_id = str(device_ids[0]) if isinstance(device_ids, list) and device_ids else None
-        if device_id:
-            device_resp = request_json(sess, "GET", f"{client_api_url}/devices/{device_id}", headers=headers)
-            result = device_resp.get("result") if isinstance(device_resp, dict) else {}
-            if isinstance(result, dict):
-                left_id = result.get("leftUserId")
-                right_id = result.get("rightUserId")
-                if left_id:
-                    user_ids.add(str(left_id))
-                if right_id:
-                    user_ids.add(str(right_id))
-                away_sides = result.get("awaySides")
-                if isinstance(away_sides, dict):
-                    for uid in away_sides.values():
-                        if uid:
-                            user_ids.add(str(uid))
-
-            db.upsert_record(
+    with db.sync_run(provider=EIGHTSLEEP_PROVIDER, resource="users_me") as run_users_me:
+        with db.transaction():
+            op = db.upsert_record(
                 provider=EIGHTSLEEP_PROVIDER,
-                resource="devices",
-                record_id=device_id,
-                payload=device_resp,
+                resource="users_me",
+                record_id=me_id,
+                payload=me_resp,
                 start_time=None,
                 end_time=None,
                 source_updated_at=utc_now_iso(),
             )
-            db.set_sync_state(provider=EIGHTSLEEP_PROVIDER, resource="devices", watermark=utc_now_iso())
+            run_users_me.add_upsert(op)
+            db.set_sync_state(provider=EIGHTSLEEP_PROVIDER, resource="users_me", watermark=utc_now_iso())
 
-        total_profiles = 0
-        total_trends = 0
-        from_date = _trend_start_date(db, cfg)
+    user_ids: set[str] = set()
+    if me_id != "me":
+        user_ids.add(me_id)
 
-        for user_id in sorted(user_ids):
-            profile_resp = request_json(sess, "GET", f"{client_api_url}/users/{user_id}", headers=headers)
-            db.upsert_record(
-                provider=EIGHTSLEEP_PROVIDER,
-                resource="users",
-                record_id=str(user_id),
-                payload=profile_resp,
-                start_time=None,
-                end_time=None,
-                source_updated_at=utc_now_iso(),
-            )
-            total_profiles += 1
+    device_ids = (me_user or {}).get("devices")
+    device_id = str(device_ids[0]) if isinstance(device_ids, list) and device_ids else None
+    if device_id:
+        device_resp = request_json(sess, "GET", f"{client_api_url}/devices/{device_id}", headers=headers)
+        result = device_resp.get("result") if isinstance(device_resp, dict) else {}
+        if isinstance(result, dict):
+            left_id = result.get("leftUserId")
+            right_id = result.get("rightUserId")
+            if left_id:
+                user_ids.add(str(left_id))
+            if right_id:
+                user_ids.add(str(right_id))
+            away_sides = result.get("awaySides")
+            if isinstance(away_sides, dict):
+                for uid in away_sides.values():
+                    if uid:
+                        user_ids.add(str(uid))
 
-            trend_resp = request_json(
-                sess,
-                "GET",
-                f"{client_api_url}/users/{user_id}/trends",
-                headers=headers,
-                params={
-                    "tz": tz,
-                    "from": from_date,
-                    "to": today,
-                    "include-main": "false",
-                    "include-all-sessions": "true",
-                    "model-version": "v2",
-                },
-            )
-
-            days = trend_resp.get("days") if isinstance(trend_resp, dict) else None
-            if not isinstance(days, list):
-                continue
-            for day in days:
-                if not isinstance(day, dict):
-                    continue
-                stable = json.dumps(day, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-                day_key = day.get("day")
-                rid = f"{user_id}:{day_key}" if day_key else f"{user_id}:{sha256_hex(stable)}"
-                start_time = day.get("day") or day.get("presenceStart")
-                end_time = day.get("presenceEnd")
-                source_updated_at = day.get("updatedAt") or day.get("presenceStart") or start_time
-                db.upsert_record(
+        with db.sync_run(provider=EIGHTSLEEP_PROVIDER, resource="devices") as run_devices:
+            with db.transaction():
+                op = db.upsert_record(
                     provider=EIGHTSLEEP_PROVIDER,
-                    resource="trends",
-                    record_id=rid,
-                    payload=day,
-                    start_time=start_time,
-                    end_time=end_time,
-                    source_updated_at=source_updated_at,
+                    resource="devices",
+                    record_id=device_id,
+                    payload=device_resp,
+                    start_time=None,
+                    end_time=None,
+                    source_updated_at=utc_now_iso(),
                 )
-                total_trends += 1
+                run_devices.add_upsert(op)
+                db.set_sync_state(provider=EIGHTSLEEP_PROVIDER, resource="devices", watermark=utc_now_iso())
 
-        db.set_sync_state(provider=EIGHTSLEEP_PROVIDER, resource="trends", watermark=today)
+    total_profiles = 0
+    total_trends = 0
+    from_date = _trend_start_date(db, cfg)
+
+    with db.sync_run(provider=EIGHTSLEEP_PROVIDER, resource="users") as run_users:
+        with db.sync_run(provider=EIGHTSLEEP_PROVIDER, resource="trends") as run_trends:
+            with db.transaction():
+                for user_id in sorted(user_ids):
+                    profile_resp = request_json(sess, "GET", f"{client_api_url}/users/{user_id}", headers=headers)
+                    op = db.upsert_record(
+                        provider=EIGHTSLEEP_PROVIDER,
+                        resource="users",
+                        record_id=str(user_id),
+                        payload=profile_resp,
+                        start_time=None,
+                        end_time=None,
+                        source_updated_at=utc_now_iso(),
+                    )
+                    run_users.add_upsert(op)
+                    total_profiles += 1
+
+                    trend_resp = request_json(
+                        sess,
+                        "GET",
+                        f"{client_api_url}/users/{user_id}/trends",
+                        headers=headers,
+                        params={
+                            "tz": tz,
+                            "from": from_date,
+                            "to": today,
+                            "include-main": "false",
+                            "include-all-sessions": "true",
+                            "model-version": "v2",
+                        },
+                    )
+
+                    days = trend_resp.get("days") if isinstance(trend_resp, dict) else None
+                    if not isinstance(days, list):
+                        continue
+                    for day in days:
+                        if not isinstance(day, dict):
+                            continue
+                        stable = json.dumps(day, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+                        day_key = day.get("day")
+                        rid = f"{user_id}:{day_key}" if day_key else f"{user_id}:{sha256_hex(stable)}"
+                        start_time = day.get("day") or day.get("presenceStart")
+                        end_time = day.get("presenceEnd")
+                        source_updated_at = day.get("updatedAt") or day.get("presenceStart") or start_time
+                        op_trend = db.upsert_record(
+                            provider=EIGHTSLEEP_PROVIDER,
+                            resource="trends",
+                            record_id=rid,
+                            payload=day,
+                            start_time=start_time,
+                            end_time=end_time,
+                            source_updated_at=source_updated_at,
+                        )
+                        run_trends.add_upsert(op_trend)
+                        total_trends += 1
+
+                db.set_sync_state(provider=EIGHTSLEEP_PROVIDER, resource="users", watermark=utc_now_iso())
+                db.set_sync_state(provider=EIGHTSLEEP_PROVIDER, resource="trends", watermark=utc_now_iso())
 
     print(f"Eight Sleep sync complete ({total_profiles} user profiles, {total_trends} trend rows).")

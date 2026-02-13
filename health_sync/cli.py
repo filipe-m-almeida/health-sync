@@ -124,6 +124,16 @@ def cmd_status(args: argparse.Namespace, cfg: LoadedConfig) -> int:
         print("Record counts:")
         for row in db.iter_record_counts():
             print(f"- {row['provider']}/{row['resource']}: {row['cnt']}")
+        print("")
+        print("Recent sync runs:")
+        for row in db.iter_sync_runs(limit=20):
+            print(
+                f"- #{row['id']} {row['provider']}/{row['resource']} {row['status']} "
+                f"ins={row['inserted_count']} upd={row['updated_count']} del={row['deleted_count']} same={row['unchanged_count']} "
+                f"start={row['started_at']} end={row['finished_at']}"
+            )
+            if row["error_text"]:
+                print(f"    error: {row['error_text']}")
     return 0
 
 

@@ -17,6 +17,7 @@ from ..util import (
     open_in_browser,
     request_json,
     sha256_hex,
+    to_epoch_seconds,
     utc_now_iso,
 )
 
@@ -249,13 +250,13 @@ def _withings_headers(access_token: str) -> dict[str, str]:
 
 def _watermark_epoch(db: HealthSyncDb, *, resource: str) -> int:
     st = db.get_sync_state(provider=WITHINGS_PROVIDER, resource=resource)
-    if st and st.watermark and st.watermark.isdigit():
-        return int(st.watermark)
-    return 0
+    if not st:
+        return 0
+    return to_epoch_seconds(st.watermark) or 0
 
 
 def _set_watermark_epoch(db: HealthSyncDb, *, resource: str, epoch: int) -> None:
-    db.set_sync_state(provider=WITHINGS_PROVIDER, resource=resource, watermark=str(int(epoch)))
+    db.set_sync_state(provider=WITHINGS_PROVIDER, resource=resource, watermark=int(epoch))
 
 
 def withings_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
@@ -353,206 +354,217 @@ def withings_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
 
     print("Syncing Withings...")
 
-    with db.transaction():
-        # Measures (body / vitals)
-        resource = "measures"
-        wm = max(0, _watermark_epoch(db, resource=resource) - overlap_s)
-        offset = 0
-        max_wm = wm
-        while True:
-            data = {
-                "action": "getmeas",
-                "meastype": ",".join(meastypes),
-                "category": "1",
-                "lastupdate": str(wm),
-            }
-            if offset:
-                data["offset"] = str(offset)
+    # Measures (body / vitals)
+    resource = "measures"
+    with db.sync_run(provider=WITHINGS_PROVIDER, resource=resource) as run:
+        with db.transaction():
+            wm = max(0, _watermark_epoch(db, resource=resource) - overlap_s)
+            offset = 0
+            max_wm = wm
+            while True:
+                data = {
+                    "action": "getmeas",
+                    "meastype": ",".join(meastypes),
+                    "category": "1",
+                    "lastupdate": str(wm),
+                }
+                if offset:
+                    data["offset"] = str(offset)
 
-            j = request_json(sess, "POST", WITHINGS_MEASURE, headers=_withings_headers(access_token), data=data)
-            if j.get("status") != 0:
-                raise RuntimeError(f"Withings getmeas failed: {j}")
-            body = j.get("body") or {}
+                j = request_json(sess, "POST", WITHINGS_MEASURE, headers=_withings_headers(access_token), data=data)
+                if j.get("status") != 0:
+                    raise RuntimeError(f"Withings getmeas failed: {j}")
+                body = j.get("body") or {}
 
-            measuregrps = body.get("measuregrps") or []
-            for grp in measuregrps:
-                if not isinstance(grp, dict):
+                measuregrps = body.get("measuregrps") or []
+                for grp in measuregrps:
+                    if not isinstance(grp, dict):
+                        continue
+                    rid = str(grp.get("grpid") or sha256_hex(str(grp)))
+                    ts = grp.get("date")
+                    start_time = None
+                    if isinstance(ts, int):
+                        start_time = datetime.fromtimestamp(ts, tz=UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+                    modified = grp.get("modified")
+                    op = db.upsert_record(
+                        provider=WITHINGS_PROVIDER,
+                        resource=resource,
+                        record_id=rid,
+                        payload=grp,
+                        start_time=start_time,
+                        end_time=None,
+                        source_updated_at=str(modified) if modified is not None else None,
+                    )
+                    run.add_upsert(op)
+
+                # Watermark guidance: body.updatetime is common for getmeas.
+                updatetime = body.get("updatetime")
+                if isinstance(updatetime, int) and updatetime > max_wm:
+                    max_wm = updatetime
+
+                more = body.get("more")
+                offset_next = body.get("offset")
+                if more in (1, True, "1") and offset_next:
+                    offset = int(offset_next)
                     continue
-                rid = str(grp.get("grpid") or sha256_hex(str(grp)))
-                ts = grp.get("date")
-                start_time = None
-                if isinstance(ts, int):
-                    start_time = datetime.fromtimestamp(ts, tz=UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-                modified = grp.get("modified")
-                db.upsert_record(
-                    provider=WITHINGS_PROVIDER,
-                    resource=resource,
-                    record_id=rid,
-                    payload=grp,
-                    start_time=start_time,
-                    end_time=None,
-                    source_updated_at=str(modified) if modified is not None else None,
-                )
+                break
 
-            # Watermark guidance: body.updatetime is common for getmeas.
-            updatetime = body.get("updatetime")
-            if isinstance(updatetime, int) and updatetime > max_wm:
-                max_wm = updatetime
+            _set_watermark_epoch(db, resource=resource, epoch=max(max_wm, now_epoch))
 
-            more = body.get("more")
-            offset_next = body.get("offset")
-            if more in (1, True, "1") and offset_next:
-                offset = int(offset_next)
-                continue
-            break
+    # Activity (daily)
+    resource = "activity"
+    with db.sync_run(provider=WITHINGS_PROVIDER, resource=resource) as run:
+        with db.transaction():
+            wm = max(0, _watermark_epoch(db, resource=resource) - overlap_s)
+            offset = 0
+            max_wm = now_epoch
+            while True:
+                data = {
+                    "action": "getactivity",
+                    "lastupdate": str(wm),
+                    "offset": str(offset),
+                    "data_fields": ",".join(activity_fields),
+                }
+                j = request_json(sess, "POST", WITHINGS_MEASURE_V2, headers=_withings_headers(access_token), data=data)
+                if j.get("status") != 0:
+                    raise RuntimeError(f"Withings getactivity failed: {j}")
+                body = j.get("body") or {}
 
-        _set_watermark_epoch(db, resource=resource, epoch=max(max_wm, now_epoch))
+                activities = body.get("activities") or []
+                for act in activities:
+                    if not isinstance(act, dict):
+                        continue
+                    rid = str(act.get("date") or act.get("id") or sha256_hex(str(act)))
+                    start_time = act.get("date")
+                    op = db.upsert_record(
+                        provider=WITHINGS_PROVIDER,
+                        resource=resource,
+                        record_id=rid,
+                        payload=act,
+                        start_time=start_time,
+                        end_time=None,
+                        source_updated_at=None,
+                    )
+                    run.add_upsert(op)
 
-        # Activity (daily)
-        resource = "activity"
-        wm = max(0, _watermark_epoch(db, resource=resource) - overlap_s)
-        offset = 0
-        max_wm = now_epoch
-        while True:
-            data = {
-                "action": "getactivity",
-                "lastupdate": str(wm),
-                "offset": str(offset),
-                "data_fields": ",".join(activity_fields),
-            }
-            j = request_json(sess, "POST", WITHINGS_MEASURE_V2, headers=_withings_headers(access_token), data=data)
-            if j.get("status") != 0:
-                raise RuntimeError(f"Withings getactivity failed: {j}")
-            body = j.get("body") or {}
-
-            activities = body.get("activities") or []
-            for act in activities:
-                if not isinstance(act, dict):
+                more = body.get("more")
+                offset_next = body.get("offset")
+                if more in (1, True, "1") and offset_next:
+                    offset = int(offset_next)
                     continue
-                rid = str(act.get("date") or act.get("id") or sha256_hex(str(act)))
-                start_time = act.get("date")
-                db.upsert_record(
-                    provider=WITHINGS_PROVIDER,
-                    resource=resource,
-                    record_id=rid,
-                    payload=act,
-                    start_time=start_time,
-                    end_time=None,
-                    source_updated_at=None,
-                )
+                break
 
-            more = body.get("more")
-            offset_next = body.get("offset")
-            if more in (1, True, "1") and offset_next:
-                offset = int(offset_next)
-                continue
-            break
+            _set_watermark_epoch(db, resource=resource, epoch=max_wm)
 
-        _set_watermark_epoch(db, resource=resource, epoch=max_wm)
+    # Workouts
+    resource = "workouts"
+    with db.sync_run(provider=WITHINGS_PROVIDER, resource=resource) as run:
+        with db.transaction():
+            wm = max(0, _watermark_epoch(db, resource=resource) - overlap_s)
+            offset = 0
+            max_wm = wm
+            while True:
+                data = {
+                    "action": "getworkouts",
+                    "lastupdate": str(wm),
+                    "offset": str(offset),
+                    "data_fields": ",".join(workout_fields),
+                }
+                j = request_json(sess, "POST", WITHINGS_MEASURE_V2, headers=_withings_headers(access_token), data=data)
+                if j.get("status") != 0:
+                    raise RuntimeError(f"Withings getworkouts failed: {j}")
+                body = j.get("body") or {}
 
-        # Workouts
-        resource = "workouts"
-        wm = max(0, _watermark_epoch(db, resource=resource) - overlap_s)
-        offset = 0
-        max_wm = wm
-        while True:
-            data = {
-                "action": "getworkouts",
-                "lastupdate": str(wm),
-                "offset": str(offset),
-                "data_fields": ",".join(workout_fields),
-            }
-            j = request_json(sess, "POST", WITHINGS_MEASURE_V2, headers=_withings_headers(access_token), data=data)
-            if j.get("status") != 0:
-                raise RuntimeError(f"Withings getworkouts failed: {j}")
-            body = j.get("body") or {}
+                series = body.get("series") or []
+                for w in series:
+                    if not isinstance(w, dict):
+                        continue
+                    rid = str(w.get("id") or w.get("startdate") or sha256_hex(str(w)))
+                    start_time = None
+                    sd = w.get("startdate")
+                    ed = w.get("enddate")
+                    if isinstance(sd, int):
+                        start_time = datetime.fromtimestamp(sd, tz=UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+                    end_time = None
+                    if isinstance(ed, int):
+                        end_time = datetime.fromtimestamp(ed, tz=UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+                    modified = w.get("modified")
+                    if isinstance(modified, int) and modified > max_wm:
+                        max_wm = modified
+                    op = db.upsert_record(
+                        provider=WITHINGS_PROVIDER,
+                        resource=resource,
+                        record_id=rid,
+                        payload=w,
+                        start_time=start_time,
+                        end_time=end_time,
+                        source_updated_at=str(modified) if modified is not None else None,
+                    )
+                    run.add_upsert(op)
 
-            series = body.get("series") or []
-            for w in series:
-                if not isinstance(w, dict):
+                more = body.get("more")
+                offset_next = body.get("offset")
+                if more in (1, True, "1") and offset_next:
+                    offset = int(offset_next)
                     continue
-                rid = str(w.get("id") or w.get("startdate") or sha256_hex(str(w)))
-                start_time = None
-                sd = w.get("startdate")
-                ed = w.get("enddate")
-                if isinstance(sd, int):
-                    start_time = datetime.fromtimestamp(sd, tz=UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-                end_time = None
-                if isinstance(ed, int):
-                    end_time = datetime.fromtimestamp(ed, tz=UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-                modified = w.get("modified")
-                if isinstance(modified, int) and modified > max_wm:
-                    max_wm = modified
-                db.upsert_record(
-                    provider=WITHINGS_PROVIDER,
-                    resource=resource,
-                    record_id=rid,
-                    payload=w,
-                    start_time=start_time,
-                    end_time=end_time,
-                    source_updated_at=str(modified) if modified is not None else None,
-                )
+                break
 
-            more = body.get("more")
-            offset_next = body.get("offset")
-            if more in (1, True, "1") and offset_next:
-                offset = int(offset_next)
-                continue
-            break
+            _set_watermark_epoch(db, resource=resource, epoch=max(max_wm, now_epoch))
 
-        _set_watermark_epoch(db, resource=resource, epoch=max(max_wm, now_epoch))
+    # Sleep summaries (aggregated)
+    resource = "sleep_summary"
+    with db.sync_run(provider=WITHINGS_PROVIDER, resource=resource) as run:
+        with db.transaction():
+            wm = max(0, _watermark_epoch(db, resource=resource) - overlap_s)
+            max_wm = wm
+            offset = 0
+            while True:
+                data = {
+                    "action": "getsummary",
+                    "lastupdate": str(wm),
+                    "data_fields": ",".join(sleep_summary_fields),
+                }
+                if offset:
+                    data["offset"] = str(offset)
 
-        # Sleep summaries (aggregated)
-        resource = "sleep_summary"
-        wm = max(0, _watermark_epoch(db, resource=resource) - overlap_s)
-        max_wm = wm
-        offset = 0
-        while True:
-            data = {
-                "action": "getsummary",
-                "lastupdate": str(wm),
-                "data_fields": ",".join(sleep_summary_fields),
-            }
-            if offset:
-                data["offset"] = str(offset)
+                j = request_json(sess, "POST", WITHINGS_SLEEP_V2, headers=_withings_headers(access_token), data=data)
+                if j.get("status") != 0:
+                    raise RuntimeError(f"Withings getsummary failed: {j}")
+                body = j.get("body") or {}
+                series = body.get("series") or []
+                for s in series:
+                    if not isinstance(s, dict):
+                        continue
+                    rid = str(s.get("id") or s.get("startdate") or sha256_hex(str(s)))
+                    start_time = None
+                    sd = s.get("startdate")
+                    ed = s.get("enddate")
+                    if isinstance(sd, int):
+                        start_time = datetime.fromtimestamp(sd, tz=UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+                    end_time = None
+                    if isinstance(ed, int):
+                        end_time = datetime.fromtimestamp(ed, tz=UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+                    modified = s.get("modified")
+                    if isinstance(modified, int) and modified > max_wm:
+                        max_wm = modified
+                    op = db.upsert_record(
+                        provider=WITHINGS_PROVIDER,
+                        resource=resource,
+                        record_id=rid,
+                        payload=s,
+                        start_time=start_time,
+                        end_time=end_time,
+                        source_updated_at=str(modified) if modified is not None else None,
+                    )
+                    run.add_upsert(op)
 
-            j = request_json(sess, "POST", WITHINGS_SLEEP_V2, headers=_withings_headers(access_token), data=data)
-            if j.get("status") != 0:
-                raise RuntimeError(f"Withings getsummary failed: {j}")
-            body = j.get("body") or {}
-            series = body.get("series") or []
-            for s in series:
-                if not isinstance(s, dict):
+                more = body.get("more")
+                offset_next = body.get("offset")
+                if more in (1, True, "1") and offset_next:
+                    offset = int(offset_next)
                     continue
-                rid = str(s.get("id") or s.get("startdate") or sha256_hex(str(s)))
-                start_time = None
-                sd = s.get("startdate")
-                ed = s.get("enddate")
-                if isinstance(sd, int):
-                    start_time = datetime.fromtimestamp(sd, tz=UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-                end_time = None
-                if isinstance(ed, int):
-                    end_time = datetime.fromtimestamp(ed, tz=UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-                modified = s.get("modified")
-                if isinstance(modified, int) and modified > max_wm:
-                    max_wm = modified
-                db.upsert_record(
-                    provider=WITHINGS_PROVIDER,
-                    resource=resource,
-                    record_id=rid,
-                    payload=s,
-                    start_time=start_time,
-                    end_time=end_time,
-                    source_updated_at=str(modified) if modified is not None else None,
-                )
+                break
 
-            more = body.get("more")
-            offset_next = body.get("offset")
-            if more in (1, True, "1") and offset_next:
-                offset = int(offset_next)
-                continue
-            break
-
-        _set_watermark_epoch(db, resource=resource, epoch=max(max_wm, now_epoch))
+            _set_watermark_epoch(db, resource=resource, epoch=max(max_wm, now_epoch))
 
     print("Withings sync complete.")

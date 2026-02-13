@@ -18,6 +18,7 @@ from ..util import (
     parse_yyyy_mm_dd,
     request_json,
     sha256_hex,
+    to_epoch_seconds,
     utc_now_iso,
 )
 
@@ -215,29 +216,11 @@ def _strava_headers(access_token: str) -> dict[str, str]:
     }
 
 
-def _to_epoch_seconds(v: object) -> int | None:
-    if v is None:
-        return None
-    if isinstance(v, int):
-        return v
-    if isinstance(v, float):
-        return int(v)
-    s = str(v).strip()
-    if not s:
-        return None
-    if s.isdigit():
-        return int(s)
-    try:
-        return int(iso_to_dt(s).timestamp())
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def _watermark_epoch(db: HealthSyncDb, *, resource: str) -> int | None:
     state = db.get_sync_state(provider=STRAVA_PROVIDER, resource=resource)
     if not state or not state.watermark:
         return None
-    return _to_epoch_seconds(state.watermark)
+    return to_epoch_seconds(state.watermark)
 
 
 def strava_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
@@ -253,80 +236,86 @@ def strava_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
 
     print("Syncing Strava...")
 
-    with db.transaction():
-        athlete = request_json(
-            sess,
-            "GET",
-            f"{STRAVA_BASE}/athlete",
-            headers=_strava_headers(access_token),
-        )
-        athlete_id = str(athlete.get("id") or "me")
-        db.upsert_record(
-            provider=STRAVA_PROVIDER,
-            resource="athlete",
-            record_id=athlete_id,
-            payload=athlete,
-            start_time=None,
-            end_time=None,
-            source_updated_at=utc_now_iso(),
-        )
-        db.set_sync_state(provider=STRAVA_PROVIDER, resource="athlete", watermark=utc_now_iso())
-
-        existing_wm = _watermark_epoch(db, resource="activities")
-        if existing_wm is not None:
-            after_epoch = max(0, existing_wm - overlap_seconds)
-        else:
-            after_epoch = int(parse_yyyy_mm_dd(cfg.config.strava.start_date).timestamp())
-
-        page = 1
-        max_start_epoch = existing_wm or 0
-        total_upserts = 0
-
-        while True:
-            batch = request_json(
+    with db.sync_run(provider=STRAVA_PROVIDER, resource="athlete") as run:
+        with db.transaction():
+            athlete = request_json(
                 sess,
                 "GET",
-                f"{STRAVA_BASE}/athlete/activities",
+                f"{STRAVA_BASE}/athlete",
                 headers=_strava_headers(access_token),
-                params={
-                    "after": str(after_epoch),
-                    "page": str(page),
-                    "per_page": str(page_size),
-                },
             )
-            if not isinstance(batch, list) or not batch:
-                break
+            athlete_id = str(athlete.get("id") or "me")
+            op = db.upsert_record(
+                provider=STRAVA_PROVIDER,
+                resource="athlete",
+                record_id=athlete_id,
+                payload=athlete,
+                start_time=None,
+                end_time=None,
+                source_updated_at=utc_now_iso(),
+            )
+            run.add_upsert(op)
+            db.set_sync_state(provider=STRAVA_PROVIDER, resource="athlete", watermark=utc_now_iso())
 
-            for item in batch:
-                if not isinstance(item, dict):
-                    continue
+    existing_wm = _watermark_epoch(db, resource="activities")
+    if existing_wm is not None:
+        after_epoch = max(0, existing_wm - overlap_seconds)
+    else:
+        after_epoch = int(parse_yyyy_mm_dd(cfg.config.strava.start_date).timestamp())
 
-                stable = json.dumps(item, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-                rid = str(item.get("id") or sha256_hex(stable))
-                start_time = item.get("start_date")
-                end_time = None
-                source_updated_at = item.get("updated_at") or start_time
-                start_epoch = _to_epoch_seconds(start_time)
-                if start_epoch is not None and start_epoch > max_start_epoch:
-                    max_start_epoch = start_epoch
+    page = 1
+    max_start_epoch = existing_wm or 0
 
-                db.upsert_record(
-                    provider=STRAVA_PROVIDER,
-                    resource="activities",
-                    record_id=rid,
-                    payload=item,
-                    start_time=start_time,
-                    end_time=end_time,
-                    source_updated_at=source_updated_at,
+    with db.sync_run(provider=STRAVA_PROVIDER, resource="activities") as run:
+        with db.transaction():
+            while True:
+                batch = request_json(
+                    sess,
+                    "GET",
+                    f"{STRAVA_BASE}/athlete/activities",
+                    headers=_strava_headers(access_token),
+                    params={
+                        "after": str(after_epoch),
+                        "page": str(page),
+                        "per_page": str(page_size),
+                    },
                 )
-                total_upserts += 1
+                if not isinstance(batch, list) or not batch:
+                    break
 
-            if len(batch) < page_size:
-                break
-            page += 1
+                for item in batch:
+                    if not isinstance(item, dict):
+                        continue
 
-        if max_start_epoch <= 0:
-            max_start_epoch = existing_wm or int(time.time())
-        db.set_sync_state(provider=STRAVA_PROVIDER, resource="activities", watermark=str(max_start_epoch))
+                    stable = json.dumps(item, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+                    rid = str(item.get("id") or sha256_hex(stable))
+                    start_time = item.get("start_date")
+                    end_time = None
+                    source_updated_at = item.get("updated_at") or start_time
+                    start_epoch = to_epoch_seconds(start_time)
+                    if start_epoch is not None and start_epoch > max_start_epoch:
+                        max_start_epoch = start_epoch
 
-    print(f"Strava sync complete ({total_upserts} activity records upserted).")
+                    op = db.upsert_record(
+                        provider=STRAVA_PROVIDER,
+                        resource="activities",
+                        record_id=rid,
+                        payload=item,
+                        start_time=start_time,
+                        end_time=end_time,
+                        source_updated_at=source_updated_at,
+                    )
+                    run.add_upsert(op)
+
+                if len(batch) < page_size:
+                    break
+                page += 1
+
+            if max_start_epoch <= 0:
+                max_start_epoch = existing_wm or int(time.time())
+            db.set_sync_state(provider=STRAVA_PROVIDER, resource="activities", watermark=max_start_epoch)
+
+    print(
+        "Strava sync complete "
+        f"({run.inserted_count + run.updated_count + run.unchanged_count} activity records processed)."
+    )
