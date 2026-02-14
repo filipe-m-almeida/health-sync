@@ -54,6 +54,21 @@ def cmd_auth(args: argparse.Namespace, cfg: LoadedConfig) -> int:
         raise ValueError(f"Unknown provider: {args.provider}")
 
 
+def _sync_provider(provider: str, db: HealthSyncDb, cfg: LoadedConfig) -> None:
+    if provider == "oura":
+        oura_sync(db, cfg)
+    elif provider == "withings":
+        withings_sync(db, cfg)
+    elif provider == "hevy":
+        hevy_sync(db, cfg)
+    elif provider == "strava":
+        strava_sync(db, cfg)
+    elif provider == "eightsleep":
+        eightsleep_sync(db, cfg)
+    else:
+        raise ValueError(f"Unknown provider: {provider}")
+
+
 def cmd_sync(args: argparse.Namespace, cfg: LoadedConfig) -> int:
     all_providers = ["oura", "withings", "hevy", "strava", "eightsleep"]
 
@@ -95,19 +110,28 @@ def cmd_sync(args: argparse.Namespace, cfg: LoadedConfig) -> int:
                 print("No providers specified; nothing to sync.")
             return 0
 
+        successes = 0
+        failures: list[tuple[str, Exception]] = []
+
         for p in to_sync:
-            if p == "oura":
-                oura_sync(db, cfg)
-            elif p == "withings":
-                withings_sync(db, cfg)
-            elif p == "hevy":
-                hevy_sync(db, cfg)
-            elif p == "strava":
-                strava_sync(db, cfg)
-            elif p == "eightsleep":
-                eightsleep_sync(db, cfg)
-            else:
-                raise ValueError(f"Unknown provider: {p}")
+            try:
+                _sync_provider(p, db, cfg)
+                successes += 1
+            except Exception as e:  # noqa: BLE001
+                failures.append((p, e))
+                print(f"WARNING: {p} sync failed: {e}", file=sys.stderr)
+
+        if failures:
+            failed_names = ", ".join(p for p, _ in failures)
+            print(
+                f"Sync completed with warnings ({len(failures)}/{len(to_sync)} providers failed): {failed_names}",
+                file=sys.stderr,
+            )
+
+        # Keep partial syncs successful (useful for cron/systemd), but fail if everything failed.
+        if successes == 0:
+            print("All selected providers failed.", file=sys.stderr)
+            return 1
 
     return 0
 

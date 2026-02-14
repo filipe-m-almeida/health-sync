@@ -1,8 +1,24 @@
 from __future__ import annotations
 
+import argparse
+import io
+import tempfile
 import unittest
+from contextlib import redirect_stderr
+from pathlib import Path
+from unittest.mock import patch
 
-from health_sync.cli import build_parser
+from health_sync.cli import build_parser, cmd_sync
+from health_sync.config import (
+    AppConfig,
+    Config,
+    EightSleepConfig,
+    HevyConfig,
+    LoadedConfig,
+    OuraConfig,
+    StravaConfig,
+    WithingsConfig,
+)
 
 
 class CliArgParsingTests(unittest.TestCase):
@@ -20,6 +36,86 @@ class CliArgParsingTests(unittest.TestCase):
         parser = build_parser()
         args = parser.parse_args(["--db", "/tmp/global.sqlite", "status", "--db", "/tmp/sub.sqlite"])
         self.assertEqual(args.db, "/tmp/sub.sqlite")
+
+
+class SyncResilienceTests(unittest.TestCase):
+    def _loaded_cfg(self, db_path: str) -> LoadedConfig:
+        return LoadedConfig(
+            path=Path("/tmp/health-sync.toml"),
+            exists=True,
+            config=Config(
+                app=AppConfig(db=db_path),
+                oura=OuraConfig(enabled=True),
+                withings=WithingsConfig(enabled=True),
+                hevy=HevyConfig(enabled=True),
+                strava=StravaConfig(enabled=False),
+                eightsleep=EightSleepConfig(enabled=False),
+            ),
+        )
+
+    def test_cmd_sync_continues_when_one_provider_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = str(Path(td) / "health.sqlite")
+            cfg = self._loaded_cfg(db_path)
+            args = argparse.Namespace(db=db_path, providers=["oura", "withings", "hevy"])
+
+            calls: list[str] = []
+
+            def _ok_oura(*_args, **_kwargs) -> None:
+                calls.append("oura")
+
+            def _fail_withings(*_args, **_kwargs) -> None:
+                calls.append("withings")
+                raise RuntimeError("boom")
+
+            def _ok_hevy(*_args, **_kwargs) -> None:
+                calls.append("hevy")
+
+            stderr = io.StringIO()
+            with (
+                patch("health_sync.cli.oura_sync", side_effect=_ok_oura),
+                patch("health_sync.cli.withings_sync", side_effect=_fail_withings),
+                patch("health_sync.cli.hevy_sync", side_effect=_ok_hevy),
+                redirect_stderr(stderr),
+            ):
+                rc = cmd_sync(args, cfg)
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(calls, ["oura", "withings", "hevy"])
+            err = stderr.getvalue()
+            self.assertIn("WARNING: withings sync failed: boom", err)
+            self.assertIn("Sync completed with warnings (1/3 providers failed): withings", err)
+
+    def test_cmd_sync_returns_nonzero_if_all_selected_providers_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = str(Path(td) / "health.sqlite")
+            cfg = self._loaded_cfg(db_path)
+            args = argparse.Namespace(db=db_path, providers=["oura", "withings"])
+
+            calls: list[str] = []
+
+            def _fail_oura(*_args, **_kwargs) -> None:
+                calls.append("oura")
+                raise RuntimeError("oura down")
+
+            def _fail_withings(*_args, **_kwargs) -> None:
+                calls.append("withings")
+                raise RuntimeError("withings down")
+
+            stderr = io.StringIO()
+            with (
+                patch("health_sync.cli.oura_sync", side_effect=_fail_oura),
+                patch("health_sync.cli.withings_sync", side_effect=_fail_withings),
+                redirect_stderr(stderr),
+            ):
+                rc = cmd_sync(args, cfg)
+
+            self.assertEqual(rc, 1)
+            self.assertEqual(calls, ["oura", "withings"])
+            err = stderr.getvalue()
+            self.assertIn("WARNING: oura sync failed: oura down", err)
+            self.assertIn("WARNING: withings sync failed: withings down", err)
+            self.assertIn("All selected providers failed.", err)
 
 
 if __name__ == "__main__":
