@@ -242,7 +242,11 @@ def oura_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
     access_token = _oura_refresh_if_needed(db, cfg, sess)
 
     start_date = cfg.config.oura.start_date
-    today = datetime.now(UTC).date().isoformat()
+    today_date = datetime.now(UTC).date()
+    today = today_date.isoformat()
+    # Oura's `/sleep` endpoint needs end_date one day ahead to reliably include
+    # the latest completed night in the returned day buckets.
+    sleep_end_date = (today_date + timedelta(days=1)).isoformat()
     overlap_days = int(cfg.config.oura.overlap_days)
 
     # Daily + session collections use date windows; Oura doesn't provide a general updated_since flag.
@@ -292,7 +296,8 @@ def oura_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
                 else:
                     start_s = start_date
 
-                params = {"start_date": start_s, "end_date": today}
+                end_s = sleep_end_date if name == "sleep" else today
+                params = {"start_date": start_s, "end_date": end_s}
                 items = _oura_fetch_all(sess, access_token=access_token, path=path, params=params)
 
                 for item in items:
