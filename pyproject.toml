@@ -28,3 +28,6 @@ dependencies = [
 
 [project.scripts]
 health-sync = "health_sync.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["health_sync*"]
