@@ -37,6 +37,23 @@ class CliArgParsingTests(unittest.TestCase):
         args = parser.parse_args(["--db", "/tmp/global.sqlite", "status", "--db", "/tmp/sub.sqlite"])
         self.assertEqual(args.db, "/tmp/sub.sqlite")
 
+    def test_providers_subcommand_is_available(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["providers"])
+        self.assertEqual(args.cmd, "providers")
+
+
+class _FakePlugin:
+    def __init__(self, provider_id: str, sync_fn) -> None:
+        self.id = provider_id
+        self.source = "test"
+        self.description = None
+        self.supports_auth = False
+        self._sync_fn = sync_fn
+
+    def sync(self, db, cfg, helpers) -> None:  # noqa: ANN001
+        self._sync_fn(db, cfg, helpers)
+
 
 class SyncResilienceTests(unittest.TestCase):
     def _loaded_cfg(self, db_path: str) -> LoadedConfig:
@@ -71,11 +88,15 @@ class SyncResilienceTests(unittest.TestCase):
             def _ok_hevy(*_args, **_kwargs) -> None:
                 calls.append("hevy")
 
+            plugins = {
+                "oura": _FakePlugin("oura", _ok_oura),
+                "withings": _FakePlugin("withings", _fail_withings),
+                "hevy": _FakePlugin("hevy", _ok_hevy),
+            }
+
             stderr = io.StringIO()
             with (
-                patch("health_sync.cli.oura_sync", side_effect=_ok_oura),
-                patch("health_sync.cli.withings_sync", side_effect=_fail_withings),
-                patch("health_sync.cli.hevy_sync", side_effect=_ok_hevy),
+                patch("health_sync.cli.load_provider_plugins", return_value=plugins),
                 redirect_stderr(stderr),
             ):
                 rc = cmd_sync(args, cfg)
@@ -102,10 +123,14 @@ class SyncResilienceTests(unittest.TestCase):
                 calls.append("withings")
                 raise RuntimeError("withings down")
 
+            plugins = {
+                "oura": _FakePlugin("oura", _fail_oura),
+                "withings": _FakePlugin("withings", _fail_withings),
+            }
+
             stderr = io.StringIO()
             with (
-                patch("health_sync.cli.oura_sync", side_effect=_fail_oura),
-                patch("health_sync.cli.withings_sync", side_effect=_fail_withings),
+                patch("health_sync.cli.load_provider_plugins", return_value=plugins),
                 redirect_stderr(stderr),
             ):
                 rc = cmd_sync(args, cfg)

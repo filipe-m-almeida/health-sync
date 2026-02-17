@@ -104,3 +104,15 @@ enabled = false
 # timezone = "UTC"
 # start_date = "2010-01-01"  # YYYY-MM-DD
 # overlap_days = 2
+
+# Optional external plugins (in-process)
+#
+# Plugin code must be discoverable either via Python entry points
+# (`health_sync.providers`) or explicit module path here.
+#
+# [plugins.garmin]
+# enabled = true
+# module = "health_sync_garmin.plugin:provider"
+# client_id = "..."
+# client_secret = "..."
+# redirect_uri = "http://localhost:8487/callback"

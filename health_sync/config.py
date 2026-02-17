@@ -113,6 +113,9 @@ class Config:
     hevy: HevyConfig = field(default_factory=HevyConfig)
     strava: StravaConfig = field(default_factory=StravaConfig)
     eightsleep: EightSleepConfig = field(default_factory=EightSleepConfig)
+    # Generic plugin config blocks loaded from [plugins.<provider_id>] tables.
+    # Keep values untyped so external plugins can own validation/defaults.
+    plugins: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -221,6 +224,7 @@ def load_config(path: str | Path | None = None) -> LoadedConfig:
     raw_hevy = _as_dict(raw.get("hevy"))
     raw_strava = _as_dict(raw.get("strava"))
     raw_eightsleep = _as_dict(raw.get("eightsleep"))
+    raw_plugins = _as_dict(raw.get("plugins"))
 
     oura_enabled = _get_bool(raw_oura, "enabled")
     withings_enabled = _get_bool(raw_withings, "enabled")
@@ -287,6 +291,14 @@ def load_config(path: str | Path | None = None) -> LoadedConfig:
         overlap_days=eightsleep_overlap_days if eightsleep_overlap_days is not None else EightSleepConfig().overlap_days,
     )
 
+    plugins: dict[str, dict[str, Any]] = {}
+    for plugin_id, plugin_cfg in raw_plugins.items():
+        if not isinstance(plugin_id, str):
+            continue
+        if not isinstance(plugin_cfg, dict):
+            continue
+        plugins[plugin_id] = dict(plugin_cfg)
+
     return LoadedConfig(
         path=cfg_path,
         exists=True,
@@ -297,6 +309,7 @@ def load_config(path: str | Path | None = None) -> LoadedConfig:
             hevy=hevy,
             strava=strava,
             eightsleep=eightsleep,
+            plugins=plugins,
         ),
     )
 

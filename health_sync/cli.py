@@ -5,11 +5,7 @@ import sys
 
 from .config import DEFAULT_CONFIG_FILENAME, LoadedConfig, load_config
 from .db import HealthSyncDb
-from .providers.eightsleep import eightsleep_sync
-from .providers.hevy import hevy_sync
-from .providers.oura import oura_auth, oura_sync
-from .providers.strava import strava_auth, strava_sync
-from .providers.withings import withings_auth, withings_sync
+from .plugins import PluginHelpers, load_provider_plugins, provider_enabled
 
 
 def _add_common_cli_flags(parser: argparse.ArgumentParser, *, suppress_defaults: bool = False) -> None:
@@ -39,70 +35,79 @@ def cmd_init_db(args: argparse.Namespace, cfg: LoadedConfig) -> int:
     return 0
 
 
+def _enable_hint(provider_id: str) -> str:
+    builtin = {"oura", "withings", "hevy", "strava", "eightsleep"}
+    if provider_id in builtin:
+        return f"[{provider_id}].enabled = true"
+    return f"[plugins.{provider_id}].enabled = true"
+
+
+def _resolve_plugins(cfg: LoadedConfig) -> dict[str, object]:
+    plugins = load_provider_plugins(cfg)
+    return dict(plugins)
+
+
 def cmd_auth(args: argparse.Namespace, cfg: LoadedConfig) -> int:
+    plugins = _resolve_plugins(cfg)
+    helpers = PluginHelpers()
+
+    plugin = plugins.get(args.provider)
+    if plugin is None:
+        known = ", ".join(sorted(plugins.keys())) if plugins else "(none)"
+        raise RuntimeError(
+            f"Unknown provider `{args.provider}`. Available providers: {known}. "
+            "Use `health-sync providers` to inspect discovery/config status."
+        )
+
+    if not bool(getattr(plugin, "supports_auth", False)):
+        raise RuntimeError(f"Provider `{args.provider}` does not support auth.")
+
     with HealthSyncDb(args.db) as db:
         db.init()
-        if args.provider == "oura":
-            oura_auth(db, cfg, listen_host=args.listen_host, listen_port=args.listen_port)
-            return 0
-        if args.provider == "withings":
-            withings_auth(db, cfg, listen_host=args.listen_host, listen_port=args.listen_port)
-            return 0
-        if args.provider == "strava":
-            strava_auth(db, cfg, listen_host=args.listen_host, listen_port=args.listen_port)
-            return 0
-        raise ValueError(f"Unknown provider: {args.provider}")
-
-
-def _sync_provider(provider: str, db: HealthSyncDb, cfg: LoadedConfig) -> None:
-    if provider == "oura":
-        oura_sync(db, cfg)
-    elif provider == "withings":
-        withings_sync(db, cfg)
-    elif provider == "hevy":
-        hevy_sync(db, cfg)
-    elif provider == "strava":
-        strava_sync(db, cfg)
-    elif provider == "eightsleep":
-        eightsleep_sync(db, cfg)
-    else:
-        raise ValueError(f"Unknown provider: {provider}")
+        plugin.auth(db, cfg, helpers, listen_host=args.listen_host, listen_port=args.listen_port)
+    return 0
 
 
 def cmd_sync(args: argparse.Namespace, cfg: LoadedConfig) -> int:
-    all_providers = ["oura", "withings", "hevy", "strava", "eightsleep"]
+    plugins = _resolve_plugins(cfg)
+    helpers = PluginHelpers()
 
-    enabled = {
-        "oura": bool(cfg.config.oura.enabled),
-        "withings": bool(cfg.config.withings.enabled),
-        "hevy": bool(cfg.config.hevy.enabled),
-        "strava": bool(cfg.config.strava.enabled),
-        "eightsleep": bool(cfg.config.eightsleep.enabled),
-    }
-
-    # Default behavior: only sync providers explicitly enabled in config.
-    # If the user passes `--providers ...`, we treat that as an override/subset, but we
-    # still won't sync a provider that is disabled in config.
     if args.providers is None:
-        providers = [p for p in all_providers if enabled.get(p, False)]
-        to_sync = providers
-        skipped: list[str] = []
+        providers = list(plugins.keys())
     else:
-        providers = args.providers
-        to_sync = [p for p in providers if enabled.get(p, False)]
-        skipped = [p for p in providers if not enabled.get(p, False)]
+        providers = list(args.providers)
+        unknown = [p for p in providers if p not in plugins]
+        if unknown:
+            known = ", ".join(sorted(plugins.keys())) if plugins else "(none)"
+            raise RuntimeError(
+                "Unknown provider(s): "
+                f"{', '.join(unknown)}. Available providers: {known}. "
+                "Use `health-sync providers` to inspect discovery/config status."
+            )
+
+    # If users enabled plugin config entries but the plugin is not installed/discovered,
+    # make that failure mode explicit.
+    for provider_id in sorted(cfg.config.plugins.keys()):
+        if provider_enabled(cfg, provider_id) and provider_id not in plugins:
+            print(
+                f"WARNING: [plugins.{provider_id}] is enabled but provider code was not discovered.",
+                file=sys.stderr,
+            )
+
+    to_sync = [p for p in providers if provider_enabled(cfg, p)]
+    skipped = [p for p in providers if not provider_enabled(cfg, p)]
 
     with HealthSyncDb(args.db) as db:
         db.init()
 
         for p in skipped:
-            print(f"Skipping {p}: disabled in config (set [{p}].enabled = true).")
+            print(f"Skipping {p}: disabled in config (set {_enable_hint(p)}).")
 
         if not to_sync:
             if args.providers is None:
                 print(
                     "No providers enabled; nothing to sync. "
-                    f"Enable one or more providers in {cfg.path} (e.g. set [hevy].enabled = true)."
+                    f"Enable one or more providers in {cfg.path} (e.g. set {_enable_hint('hevy')})."
                 )
             elif providers:
                 print("No enabled providers selected; nothing to sync.")
@@ -115,7 +120,7 @@ def cmd_sync(args: argparse.Namespace, cfg: LoadedConfig) -> int:
 
         for p in to_sync:
             try:
-                _sync_provider(p, db, cfg)
+                plugins[p].sync(db, cfg, helpers)
                 successes += 1
             except Exception as e:  # noqa: BLE001
                 failures.append((p, e))
@@ -132,6 +137,40 @@ def cmd_sync(args: argparse.Namespace, cfg: LoadedConfig) -> int:
         if successes == 0:
             print("All selected providers failed.", file=sys.stderr)
             return 1
+
+    return 0
+
+
+def cmd_providers(args: argparse.Namespace, cfg: LoadedConfig) -> int:
+    plugins = _resolve_plugins(cfg)
+    helpers = PluginHelpers()
+
+    if not plugins:
+        print("No providers discovered.")
+        return 0
+
+    print("Providers:")
+    for provider_id in sorted(plugins.keys()):
+        plugin = plugins[provider_id]
+        enabled = helpers.is_enabled(cfg, provider_id)
+        supports_auth = bool(getattr(plugin, "supports_auth", False))
+        source = getattr(plugin, "source", "unknown")
+        description = getattr(plugin, "description", None) or ""
+
+        line = (
+            f"- {provider_id}: enabled={str(enabled).lower()} "
+            f"auth={str(supports_auth).lower()} source={source}"
+        )
+        if description:
+            line += f" — {description}"
+        print(line)
+
+        # Show config-backed plugin module information when available.
+        cfg_block = cfg.config.plugins.get(provider_id)
+        if args.verbose and isinstance(cfg_block, dict):
+            module_spec = cfg_block.get("module")
+            if isinstance(module_spec, str) and module_spec.strip():
+                print(f"    module={module_spec.strip()}")
 
     return 0
 
@@ -177,9 +216,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_cli_flags(p_init, suppress_defaults=True)
     p_init.set_defaults(func=cmd_init_db)
 
-    p_auth = sub.add_parser("auth", help="Run OAuth2 auth flow for a provider.")
+    p_auth = sub.add_parser("auth", help="Run OAuth2 auth flow for a provider/plugin.")
     _add_common_cli_flags(p_auth, suppress_defaults=True)
-    p_auth.add_argument("provider", choices=["oura", "withings", "strava"])
+    p_auth.add_argument("provider", help="Provider id (built-in or discovered plugin)")
     p_auth.add_argument("--listen-host", default="127.0.0.1")
     p_auth.add_argument("--listen-port", type=int, default=0, help="0 = pick provider default port")
     p_auth.set_defaults(func=cmd_auth)
@@ -189,10 +228,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument(
         "--providers",
         nargs="*",
-        choices=["oura", "withings", "hevy", "strava", "eightsleep"],
-        help="Subset of providers to sync (still requires [provider].enabled = true in config)",
+        metavar="PROVIDER",
+        help=(
+            "Subset of providers/plugins to sync "
+            "(still requires provider to be enabled in config)."
+        ),
     )
     p_sync.set_defaults(func=cmd_sync)
+
+    p_providers = sub.add_parser("providers", help="List discovered providers/plugins and enablement state.")
+    _add_common_cli_flags(p_providers, suppress_defaults=True)
+    p_providers.add_argument("--verbose", action="store_true", help="Include plugin module metadata when available")
+    p_providers.set_defaults(func=cmd_providers)
 
     p_status = sub.add_parser("status", help="Show sync watermarks and record counts.")
     _add_common_cli_flags(p_status, suppress_defaults=True)

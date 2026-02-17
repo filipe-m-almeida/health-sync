@@ -165,6 +165,57 @@ Eight Sleep:
 - `[eightsleep].start_date`: YYYY-MM-DD (default: `2010-01-01`)
 - `[eightsleep].overlap_days`: Re-fetch overlap days on each sync (default: `2`)
 
+### External plugins (in-process)
+
+`health-sync` can discover external provider plugins at runtime. Plugins run in-process and use the same DB schema.
+
+Discovery options:
+
+1. **Python entry points** (`health_sync.providers`) from installed packages.
+2. **Config module path** in `health-sync.toml` via `[plugins.<id>].module = "pkg.module:provider"`.
+
+Enablement:
+
+- Built-ins still use `[oura].enabled`, `[withings].enabled`, etc.
+- External plugins use `[plugins.<id>].enabled = true`.
+
+Inspect discovered providers:
+
+```bash
+health-sync providers
+```
+
+Expected plugin object contract:
+
+- `id: str`
+- `sync(db, cfg, helpers)`
+- Optional `auth(db, cfg, helpers, listen_host, listen_port)`
+- Optional metadata: `supports_auth`, `description`
+
+Helpers passed to plugins (`helpers`) include:
+
+- `helpers.config_for(cfg, provider_id)` → dict from `[plugins.<provider_id>]`
+- `helpers.is_enabled(cfg, provider_id)`
+- `helpers.require_str(cfg, provider_id, key)`
+
+Example external package entry point:
+
+```toml
+[project.entry-points."health_sync.providers"]
+garmin = "health_sync_garmin.plugin:provider"
+```
+
+Example config for module-path loading:
+
+```toml
+[plugins.garmin]
+enabled = true
+module = "health_sync_garmin.plugin:provider"
+client_id = "..."
+client_secret = "..."
+redirect_uri = "http://localhost:8487/callback"
+```
+
 ## Database Layout (high level)
 
 - `records`: generic JSON records keyed by `(provider, resource, record_id)`.
