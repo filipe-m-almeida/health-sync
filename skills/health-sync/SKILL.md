@@ -1,6 +1,6 @@
 ---
 name: health-sync
-description: Analyze the health-sync SQLite cache (health.sqlite) and its schema (records, sync_state, oauth_tokens). Use when querying or debugging synced health data from Oura, Withings, or Hevy; validating sync coverage/watermarks; or writing SQL that extracts fields from provider JSON payloads.
+description: Analyze the health-sync SQLite cache (health.sqlite) and its schema (records, sync_state, oauth_tokens). Use when querying or debugging synced health data from Oura, Withings, Hevy, or Strava; validating sync coverage/watermarks; or writing SQL that extracts fields from provider JSON payloads.
 ---
 
 # Health Sync DB Analysis
@@ -19,7 +19,7 @@ One row per provider record (raw JSON).
 
 Columns:
 
-- `provider` (TEXT): `oura`, `withings`, `hevy`
+- `provider` (TEXT): `oura`, `withings`, `hevy`, `strava`
 - `resource` (TEXT): provider-specific collection name (see provider reference files below)
 - `record_id` (TEXT): stable id within `(provider, resource)`
 - `start_time` (TEXT): usually ISO string or `YYYY-MM-DD` (semantics vary by provider/resource)
@@ -50,6 +50,7 @@ Provider-specific schemas are documented in dedicated reference files:
 - Oura: `references/oura.md`
 - Withings: `references/withings.md`
 - Hevy: `references/hevy.md`
+- Strava: `references/strava.md`
 
 Those files describe:
 
@@ -70,3 +71,4 @@ Read only what you need:
 - For Oura questions: `references/oura.md`
 - For Withings questions: `references/withings.md`
 - For Hevy questions: `references/hevy.md`
+- For Strava questions: `references/strava.md`
