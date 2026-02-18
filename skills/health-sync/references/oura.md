@@ -178,8 +178,8 @@ Important note about time columns:
 - Upstream endpoint: `GET /v2/usercollection/workout`
 - `record_id`: `$.id` (fallback: `$.day` or hash)
 - `start_time`: `$.day` (YYYY-MM-DD) (note: payload includes `start_datetime`)
-- `end_time`: `$.end_datetime` is in payload, but `records.end_time` is not populated
-- `source_updated_at`: `$.updated_at` or `$.modified_at` or `$.timestamp` (when present)
+- `end_time`: `$.end_datetime` (ISO datetime; populated when present in payload)
+- `source_updated_at`: `$.updated_at` or `$.modified_at` or `$.timestamp` (often NULL for workout rows)
 
 `payload_json` keys:
 
@@ -262,4 +262,3 @@ group by day_utc
 order by day_utc desc
 limit 30;
 ```
-

@@ -153,7 +153,8 @@ Top-level `payload_json` keys commonly present:
 Withings incremental sync uses epoch seconds.
 
 - `sync_state.provider = 'withings'`
-- `sync_state.watermark` is stored as a stringified epoch integer and is passed as `lastupdate=...` in API calls.
+- Provider code computes/uses epoch values for `lastupdate`, but persisted `sync_state.watermark` is normalized to UTC ISO format in SQLite.
+- On read, provider code converts the stored watermark back to epoch seconds before calling the API.
 
 ## Common Analysis Queries
 
@@ -208,4 +209,3 @@ where provider = 'withings' and resource = 'workouts'
 order by start_dt desc
 limit 50;
 ```
-

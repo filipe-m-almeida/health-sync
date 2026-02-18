@@ -1,4 +1,0 @@
-interface:
-  display_name: "Eight Sleep"
-  short_description: "Inspect Eight Sleep sync and SQLite records"
-  default_prompt: "Use $eightsleep to analyze Eight Sleep sync behavior, config, and health.sqlite data."
