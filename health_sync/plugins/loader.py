@@ -40,43 +40,58 @@ class ObjectProviderPlugin:
             fn(db, cfg, helpers, listen_host, listen_port)
 
 
+@dataclass(frozen=True)
+class BuiltinPluginSpec:
+    id: str
+    sync_fn: Any
+    auth_fn: Any
+    description: str
+
+
+BUILTIN_PLUGIN_SPECS: tuple[BuiltinPluginSpec, ...] = (
+    BuiltinPluginSpec(
+        id="oura",
+        sync_fn=oura_sync,
+        auth_fn=oura_auth,
+        description="Oura Cloud API v2",
+    ),
+    BuiltinPluginSpec(
+        id="withings",
+        sync_fn=withings_sync,
+        auth_fn=withings_auth,
+        description="Withings Advanced Health Data API",
+    ),
+    BuiltinPluginSpec(
+        id="hevy",
+        sync_fn=hevy_sync,
+        auth_fn=None,
+        description="Hevy public API",
+    ),
+    BuiltinPluginSpec(
+        id="strava",
+        sync_fn=strava_sync,
+        auth_fn=strava_auth,
+        description="Strava API",
+    ),
+    BuiltinPluginSpec(
+        id="eightsleep",
+        sync_fn=eightsleep_sync,
+        auth_fn=None,
+        description="Eight Sleep (unofficial API)",
+    ),
+)
+
+
 def _builtin_plugins() -> list[ProviderPlugin]:
     return [
         FunctionalProviderPlugin(
-            id="oura",
-            sync_fn=oura_sync,
-            auth_fn=oura_auth,
+            id=spec.id,
+            sync_fn=spec.sync_fn,
+            auth_fn=spec.auth_fn,
             source="builtin",
-            description="Oura Cloud API v2",
-        ),
-        FunctionalProviderPlugin(
-            id="withings",
-            sync_fn=withings_sync,
-            auth_fn=withings_auth,
-            source="builtin",
-            description="Withings Advanced Health Data API",
-        ),
-        FunctionalProviderPlugin(
-            id="hevy",
-            sync_fn=hevy_sync,
-            auth_fn=None,
-            source="builtin",
-            description="Hevy public API",
-        ),
-        FunctionalProviderPlugin(
-            id="strava",
-            sync_fn=strava_sync,
-            auth_fn=strava_auth,
-            source="builtin",
-            description="Strava API",
-        ),
-        FunctionalProviderPlugin(
-            id="eightsleep",
-            sync_fn=eightsleep_sync,
-            auth_fn=None,
-            source="builtin",
-            description="Eight Sleep (unofficial API)",
-        ),
+            description=spec.description,
+        )
+        for spec in BUILTIN_PLUGIN_SPECS
     ]
 
 

@@ -1,22 +1,27 @@
 from __future__ import annotations
 
-import json
 import secrets
 from datetime import UTC, datetime
-from urllib.parse import quote, urlencode, urlparse
 
 import requests
 
 from ..config import LoadedConfig, require_str
 from ..db import HealthSyncDb
+from .runtime import (
+    build_auth_url,
+    first_present,
+    parse_redirect_uri,
+    sync_resource,
+    token_expiring_soon,
+    token_extra,
+    upsert_item,
+)
 from ..util import (
     dt_to_iso_z,
-    iso_to_dt,
     oauth_listen_for_code,
     open_in_browser,
     parse_yyyy_mm_dd,
     request_json,
-    sha256_hex,
     to_epoch_seconds,
     utc_now_iso,
 )
@@ -33,13 +38,12 @@ def _strava_default_redirect_uri() -> str:
 
 
 def _strava_redirect(cfg: LoadedConfig) -> tuple[str, int, str]:
-    redirect_uri = cfg.config.strava.redirect_uri or _strava_default_redirect_uri()
-    u = urlparse(redirect_uri)
-    if u.scheme not in ("http", "https"):
-        raise RuntimeError(f"Invalid `strava.redirect_uri`: {redirect_uri}")
-    port = u.port or (443 if u.scheme == "https" else 80)
-    path = u.path or "/callback"
-    return redirect_uri, port, path
+    spec = parse_redirect_uri(
+        cfg.config.strava.redirect_uri,
+        default_uri=_strava_default_redirect_uri(),
+        key_name="strava.redirect_uri",
+    )
+    return spec.redirect_uri, spec.listen_port, spec.callback_path
 
 
 def _strava_scopes(cfg: LoadedConfig) -> str:
@@ -63,15 +67,17 @@ def _strava_expires_to_iso(v: object) -> str | None:
 
 
 def _strava_expires_to_dt(v: str | None) -> datetime | None:
-    if not v:
+    if v is None:
         return None
-    s = v.strip()
-    if not s:
-        return None
-    if s.isdigit():
-        return datetime.fromtimestamp(int(s), tz=UTC)
     try:
-        return iso_to_dt(s)
+        epoch = int(v)
+        return datetime.fromtimestamp(epoch, tz=UTC)
+    except Exception:  # noqa: BLE001
+        pass
+    if not v.strip():
+        return None
+    try:
+        return datetime.fromisoformat(v.replace("Z", "+00:00"))
     except Exception:  # noqa: BLE001
         return None
 
@@ -103,9 +109,16 @@ def strava_auth(db: HealthSyncDb, cfg: LoadedConfig, *, listen_host: str = "127.
     scope = _strava_scopes(cfg)
     approval_prompt = cfg.config.strava.approval_prompt or "auto"
 
-    auth_url = (
-        f"{STRAVA_OAUTH_AUTHORIZE}?"
-        f"{urlencode({'client_id': client_id, 'response_type': 'code', 'redirect_uri': redirect_uri, 'approval_prompt': approval_prompt, 'scope': scope, 'state': state}, quote_via=quote)}"
+    auth_url = build_auth_url(
+        STRAVA_OAUTH_AUTHORIZE,
+        {
+            "client_id": client_id,
+            "response_type": "code",
+            "redirect_uri": redirect_uri,
+            "approval_prompt": approval_prompt,
+            "scope": scope,
+            "state": state,
+        },
     )
 
     print("Open this URL to authorize Strava:")
@@ -145,7 +158,10 @@ def strava_auth(db: HealthSyncDb, cfg: LoadedConfig, *, listen_host: str = "127.
         token_type=token_type,
         scope=scope_resp,
         expires_at=expires_at,
-        extra={k: v for k, v in token.items() if k not in {"access_token", "refresh_token", "token_type", "scope", "expires_at"}},
+        extra=token_extra(
+            token,
+            excluded=("access_token", "refresh_token", "token_type", "scope", "expires_at"),
+        ),
     )
     print("Stored Strava OAuth token in DB.")
 
@@ -165,12 +181,12 @@ def _strava_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: request
 
     access_token = tok["access_token"]
     refresh_token = tok.get("refresh_token")
-    expires_at = _strava_expires_to_dt(tok.get("expires_at"))
+    expires_at = tok.get("expires_at")
 
     if not refresh_token or not expires_at:
         return access_token
 
-    if (expires_at - datetime.now(UTC)).total_seconds() > 60:
+    if not token_expiring_soon(expires_at, skew_seconds=60):
         return access_token
 
     client_id = require_str(cfg, cfg.config.strava.client_id, key="strava.client_id")
@@ -202,7 +218,10 @@ def _strava_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: request
         token_type=token_type,
         scope=scope_resp,
         expires_at=new_expires_at,
-        extra={k: v for k, v in token.items() if k not in {"access_token", "refresh_token", "token_type", "scope", "expires_at"}},
+        extra=token_extra(
+            token,
+            excluded=("access_token", "refresh_token", "token_type", "scope", "expires_at"),
+        ),
     )
     return new_access
 
@@ -226,35 +245,30 @@ def strava_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
     sess = requests.Session()
     access_token = _strava_refresh_if_needed(db, cfg, sess)
 
-    overlap_seconds = int(cfg.config.strava.overlap_seconds)
-    page_size = int(cfg.config.strava.page_size)
-    if page_size < 1:
-        page_size = 1
-    if page_size > 200:
-        page_size = 200
+    overlap_seconds = max(0, int(cfg.config.strava.overlap_seconds))
+    page_size = min(200, max(1, int(cfg.config.strava.page_size)))
 
     print("Syncing Strava...")
 
-    with db.sync_run(provider=STRAVA_PROVIDER, resource="athlete") as run:
-        with db.transaction():
-            athlete = request_json(
-                sess,
-                "GET",
-                f"{STRAVA_BASE}/athlete",
-                headers=_strava_headers(access_token),
-            )
-            athlete_id = str(athlete.get("id") or "me")
-            op = db.upsert_record(
-                provider=STRAVA_PROVIDER,
-                resource="athlete",
-                record_id=athlete_id,
-                payload=athlete,
-                start_time=None,
-                end_time=None,
-                source_updated_at=utc_now_iso(),
-            )
-            run.add_upsert(op)
-            db.set_sync_state(provider=STRAVA_PROVIDER, resource="athlete", watermark=utc_now_iso())
+    with sync_resource(db, provider=STRAVA_PROVIDER, resource="athlete") as run:
+        athlete = request_json(
+            sess,
+            "GET",
+            f"{STRAVA_BASE}/athlete",
+            headers=_strava_headers(access_token),
+        )
+        athlete_id = str(athlete.get("id") or "me")
+        op = db.upsert_record(
+            provider=STRAVA_PROVIDER,
+            resource="athlete",
+            record_id=athlete_id,
+            payload=athlete,
+            start_time=None,
+            end_time=None,
+            source_updated_at=utc_now_iso(),
+        )
+        run.add_upsert(op)
+        db.set_sync_state(provider=STRAVA_PROVIDER, resource="athlete", watermark=utc_now_iso())
 
     existing_wm = _watermark_epoch(db, resource="activities")
     if existing_wm is not None:
@@ -265,57 +279,52 @@ def strava_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
     page = 1
     max_start_epoch: int | None = existing_wm
 
-    with db.sync_run(provider=STRAVA_PROVIDER, resource="activities") as run:
-        with db.transaction():
-            while True:
-                batch = request_json(
-                    sess,
-                    "GET",
-                    f"{STRAVA_BASE}/athlete/activities",
-                    headers=_strava_headers(access_token),
-                    params={
-                        "after": str(after_epoch),
-                        "page": str(page),
-                        "per_page": str(page_size),
-                    },
+    with sync_resource(db, provider=STRAVA_PROVIDER, resource="activities") as run:
+        while True:
+            batch = request_json(
+                sess,
+                "GET",
+                f"{STRAVA_BASE}/athlete/activities",
+                headers=_strava_headers(access_token),
+                params={
+                    "after": str(after_epoch),
+                    "page": str(page),
+                    "per_page": str(page_size),
+                },
+            )
+            if not isinstance(batch, list) or not batch:
+                break
+
+            for item in batch:
+                if not isinstance(item, dict):
+                    continue
+
+                start_time = first_present(item, ("start_date",))
+                start_epoch = to_epoch_seconds(start_time)
+                if start_epoch is not None and (max_start_epoch is None or start_epoch > max_start_epoch):
+                    max_start_epoch = start_epoch
+
+                upsert_item(
+                    db,
+                    run,
+                    provider=STRAVA_PROVIDER,
+                    resource="activities",
+                    item=item,
+                    record_id_keys=("id",),
+                    start_keys=("start_date",),
+                    updated_keys=("updated_at", "start_date"),
                 )
-                if not isinstance(batch, list) or not batch:
-                    break
 
-                for item in batch:
-                    if not isinstance(item, dict):
-                        continue
+            if len(batch) < page_size:
+                break
+            page += 1
 
-                    stable = json.dumps(item, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-                    rid = str(item.get("id") or sha256_hex(stable))
-                    start_time = item.get("start_date")
-                    end_time = None
-                    source_updated_at = item.get("updated_at") or start_time
-                    start_epoch = to_epoch_seconds(start_time)
-                    if start_epoch is not None and (max_start_epoch is None or start_epoch > max_start_epoch):
-                        max_start_epoch = start_epoch
-
-                    op = db.upsert_record(
-                        provider=STRAVA_PROVIDER,
-                        resource="activities",
-                        record_id=rid,
-                        payload=item,
-                        start_time=start_time,
-                        end_time=end_time,
-                        source_updated_at=source_updated_at,
-                    )
-                    run.add_upsert(op)
-
-                if len(batch) < page_size:
-                    break
-                page += 1
-
-            if max_start_epoch is None:
-                # No prior watermark and no activities returned. Keep the initial
-                # backfill anchor rather than advancing to "now", which can skip
-                # late-imported historical activities.
-                max_start_epoch = after_epoch
-            db.set_sync_state(provider=STRAVA_PROVIDER, resource="activities", watermark=max_start_epoch)
+        if max_start_epoch is None:
+            # No prior watermark and no activities returned. Keep the initial
+            # backfill anchor rather than advancing to "now", which can skip
+            # late-imported historical activities.
+            max_start_epoch = after_epoch
+        db.set_sync_state(provider=STRAVA_PROVIDER, resource="activities", watermark=max_start_epoch)
 
     print(
         "Strava sync complete "

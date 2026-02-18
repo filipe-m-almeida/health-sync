@@ -7,6 +7,9 @@ from ..config import LoadedConfig
 from ..db import HealthSyncDb
 
 
+BUILTIN_PROVIDER_IDS: tuple[str, ...] = ("oura", "withings", "hevy", "strava", "eightsleep")
+
+
 def _boolish(v: Any, *, default: bool = False) -> bool:
     if v is None:
         return default

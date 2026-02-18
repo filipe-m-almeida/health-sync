@@ -129,6 +129,10 @@ def _as_dict(v: Any) -> dict[str, Any]:
     return v if isinstance(v, dict) else {}
 
 
+def _coalesce(value: Any, default: Any) -> Any:
+    return default if value is None else value
+
+
 def _get_str(d: dict[str, Any], key: str) -> str | None:
     v = d.get(key)
     if v is None:
@@ -225,70 +229,62 @@ def load_config(path: str | Path | None = None) -> LoadedConfig:
     raw_strava = _as_dict(raw.get("strava"))
     raw_eightsleep = _as_dict(raw.get("eightsleep"))
     raw_plugins = _as_dict(raw.get("plugins"))
-
-    oura_enabled = _get_bool(raw_oura, "enabled")
-    withings_enabled = _get_bool(raw_withings, "enabled")
-    hevy_enabled = _get_bool(raw_hevy, "enabled")
-    strava_enabled = _get_bool(raw_strava, "enabled")
-    eightsleep_enabled = _get_bool(raw_eightsleep, "enabled")
+    defaults = Config()
 
     app = AppConfig(
-        db=_get_str(raw_app, "db") or AppConfig().db,
+        db=_coalesce(_get_str(raw_app, "db"), defaults.app.db),
     )
     oura = OuraConfig(
-        enabled=oura_enabled if oura_enabled is not None else OuraConfig().enabled,
+        enabled=_coalesce(_get_bool(raw_oura, "enabled"), defaults.oura.enabled),
         access_token=_get_str(raw_oura, "access_token"),
         client_id=_get_str(raw_oura, "client_id"),
         client_secret=_get_str(raw_oura, "client_secret"),
-        redirect_uri=_get_str(raw_oura, "redirect_uri") or OuraConfig().redirect_uri,
-        scopes=_get_str(raw_oura, "scopes") or OuraConfig().scopes,
-        start_date=_get_str(raw_oura, "start_date") or OuraConfig().start_date,
-        overlap_days=_get_int(raw_oura, "overlap_days") or OuraConfig().overlap_days,
+        redirect_uri=_coalesce(_get_str(raw_oura, "redirect_uri"), defaults.oura.redirect_uri),
+        scopes=_coalesce(_get_str(raw_oura, "scopes"), defaults.oura.scopes),
+        start_date=_coalesce(_get_str(raw_oura, "start_date"), defaults.oura.start_date),
+        overlap_days=_coalesce(_get_int(raw_oura, "overlap_days"), defaults.oura.overlap_days),
     )
     withings = WithingsConfig(
-        enabled=withings_enabled if withings_enabled is not None else WithingsConfig().enabled,
+        enabled=_coalesce(_get_bool(raw_withings, "enabled"), defaults.withings.enabled),
         client_id=_get_str(raw_withings, "client_id"),
         client_secret=_get_str(raw_withings, "client_secret"),
-        redirect_uri=_get_str(raw_withings, "redirect_uri") or WithingsConfig().redirect_uri,
-        scopes=_get_str(raw_withings, "scopes") or WithingsConfig().scopes,
-        overlap_seconds=_get_int(raw_withings, "overlap_seconds") or WithingsConfig().overlap_seconds,
+        redirect_uri=_coalesce(_get_str(raw_withings, "redirect_uri"), defaults.withings.redirect_uri),
+        scopes=_coalesce(_get_str(raw_withings, "scopes"), defaults.withings.scopes),
+        overlap_seconds=_coalesce(_get_int(raw_withings, "overlap_seconds"), defaults.withings.overlap_seconds),
         meastypes=_get_list_str(raw_withings, "meastypes"),
     )
     hevy = HevyConfig(
-        enabled=hevy_enabled if hevy_enabled is not None else HevyConfig().enabled,
+        enabled=_coalesce(_get_bool(raw_hevy, "enabled"), defaults.hevy.enabled),
         api_key=_get_str(raw_hevy, "api_key"),
-        base_url=_get_str(raw_hevy, "base_url") or HevyConfig().base_url,
-        overlap_seconds=_get_int(raw_hevy, "overlap_seconds") or HevyConfig().overlap_seconds,
-        page_size=_get_int(raw_hevy, "page_size") or HevyConfig().page_size,
-        since=_get_str(raw_hevy, "since") or HevyConfig().since,
+        base_url=_coalesce(_get_str(raw_hevy, "base_url"), defaults.hevy.base_url),
+        overlap_seconds=_coalesce(_get_int(raw_hevy, "overlap_seconds"), defaults.hevy.overlap_seconds),
+        page_size=_coalesce(_get_int(raw_hevy, "page_size"), defaults.hevy.page_size),
+        since=_coalesce(_get_str(raw_hevy, "since"), defaults.hevy.since),
     )
-    strava_overlap_seconds = _get_int(raw_strava, "overlap_seconds")
-    strava_page_size = _get_int(raw_strava, "page_size")
     strava = StravaConfig(
-        enabled=strava_enabled if strava_enabled is not None else StravaConfig().enabled,
+        enabled=_coalesce(_get_bool(raw_strava, "enabled"), defaults.strava.enabled),
         access_token=_get_str(raw_strava, "access_token"),
         client_id=_get_str(raw_strava, "client_id"),
         client_secret=_get_str(raw_strava, "client_secret"),
-        redirect_uri=_get_str(raw_strava, "redirect_uri") or StravaConfig().redirect_uri,
-        scopes=_get_str(raw_strava, "scopes") or StravaConfig().scopes,
-        approval_prompt=_get_str(raw_strava, "approval_prompt") or StravaConfig().approval_prompt,
-        start_date=_get_str(raw_strava, "start_date") or StravaConfig().start_date,
-        overlap_seconds=strava_overlap_seconds if strava_overlap_seconds is not None else StravaConfig().overlap_seconds,
-        page_size=strava_page_size if strava_page_size is not None else StravaConfig().page_size,
+        redirect_uri=_coalesce(_get_str(raw_strava, "redirect_uri"), defaults.strava.redirect_uri),
+        scopes=_coalesce(_get_str(raw_strava, "scopes"), defaults.strava.scopes),
+        approval_prompt=_coalesce(_get_str(raw_strava, "approval_prompt"), defaults.strava.approval_prompt),
+        start_date=_coalesce(_get_str(raw_strava, "start_date"), defaults.strava.start_date),
+        overlap_seconds=_coalesce(_get_int(raw_strava, "overlap_seconds"), defaults.strava.overlap_seconds),
+        page_size=_coalesce(_get_int(raw_strava, "page_size"), defaults.strava.page_size),
     )
-    eightsleep_overlap_days = _get_int(raw_eightsleep, "overlap_days")
     eightsleep = EightSleepConfig(
-        enabled=eightsleep_enabled if eightsleep_enabled is not None else EightSleepConfig().enabled,
+        enabled=_coalesce(_get_bool(raw_eightsleep, "enabled"), defaults.eightsleep.enabled),
         access_token=_get_str(raw_eightsleep, "access_token"),
         email=_get_str(raw_eightsleep, "email"),
         password=_get_str(raw_eightsleep, "password"),
         client_id=_get_str(raw_eightsleep, "client_id"),
         client_secret=_get_str(raw_eightsleep, "client_secret"),
-        timezone=_get_str(raw_eightsleep, "timezone") or EightSleepConfig().timezone,
-        auth_url=_get_str(raw_eightsleep, "auth_url") or EightSleepConfig().auth_url,
-        client_api_url=_get_str(raw_eightsleep, "client_api_url") or EightSleepConfig().client_api_url,
-        start_date=_get_str(raw_eightsleep, "start_date") or EightSleepConfig().start_date,
-        overlap_days=eightsleep_overlap_days if eightsleep_overlap_days is not None else EightSleepConfig().overlap_days,
+        timezone=_coalesce(_get_str(raw_eightsleep, "timezone"), defaults.eightsleep.timezone),
+        auth_url=_coalesce(_get_str(raw_eightsleep, "auth_url"), defaults.eightsleep.auth_url),
+        client_api_url=_coalesce(_get_str(raw_eightsleep, "client_api_url"), defaults.eightsleep.client_api_url),
+        start_date=_coalesce(_get_str(raw_eightsleep, "start_date"), defaults.eightsleep.start_date),
+        overlap_days=_coalesce(_get_int(raw_eightsleep, "overlap_days"), defaults.eightsleep.overlap_days),
     )
 
     plugins: dict[str, dict[str, Any]] = {}

@@ -143,6 +143,19 @@ You can add external providers as in-process plugins.
 - Configure plugin blocks under `[plugins.<id>]`
 - Enable them with `[plugins.<id>].enabled = true`
 
+## Architecture
+
+The project is intentionally split into small, composable layers:
+
+- `health_sync/cli.py`: command parsing and orchestration
+- `health_sync/config.py`: tolerant TOML parsing into typed dataclasses
+- `health_sync/db.py`: generic SQLite storage + sync-run accounting
+- `health_sync/providers/*.py`: provider-specific API semantics
+- `health_sync/providers/runtime.py`: shared provider helpers (OAuth redirect parsing, token expiry checks, run/transaction wrappers, upsert normalization)
+- `health_sync/plugins/*`: built-in + external provider discovery
+
+Provider modules should focus on endpoint-specific concerns and use shared runtime helpers for repeated mechanics.
+
 ## Notes
 
 - Eight Sleep integration uses unofficial endpoints and may break if the upstream API changes.
@@ -153,8 +166,10 @@ You can add external providers as in-process plugins.
 Run tests:
 
 ```bash
-uv run pytest
+uv run --with pytest pytest -q
 ```
+
+See `docs/architecture.md` for contributor-level implementation details and extension guidance.
 
 ## License
 

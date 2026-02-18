@@ -4,7 +4,7 @@ import argparse
 import io
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -69,6 +69,47 @@ class SyncResilienceTests(unittest.TestCase):
                 eightsleep=EightSleepConfig(enabled=False),
             ),
         )
+
+    def test_cmd_sync_unknown_provider_raises_helpful_error(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = str(Path(td) / "health.sqlite")
+            cfg = self._loaded_cfg(db_path)
+            args = argparse.Namespace(db=db_path, providers=["oura", "unknown"])
+            plugins = {"oura": _FakePlugin("oura", lambda *_a, **_k: None)}
+
+            with patch("health_sync.cli.load_provider_plugins", return_value=plugins):
+                with self.assertRaisesRegex(RuntimeError, "Unknown provider\\(s\\): unknown"):
+                    cmd_sync(args, cfg)
+
+    def test_cmd_sync_warns_when_enabled_plugin_block_is_not_discovered(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = str(Path(td) / "health.sqlite")
+            cfg = LoadedConfig(
+                path=Path("/tmp/health-sync.toml"),
+                exists=True,
+                config=Config(
+                    app=AppConfig(db=db_path),
+                    oura=OuraConfig(enabled=False),
+                    withings=WithingsConfig(enabled=False),
+                    hevy=HevyConfig(enabled=False),
+                    strava=StravaConfig(enabled=False),
+                    eightsleep=EightSleepConfig(enabled=False),
+                    plugins={"demo": {"enabled": True}},
+                ),
+            )
+            args = argparse.Namespace(db=db_path, providers=None)
+            stderr = io.StringIO()
+            stdout = io.StringIO()
+            with (
+                patch("health_sync.cli.load_provider_plugins", return_value={}),
+                redirect_stderr(stderr),
+                redirect_stdout(stdout),
+            ):
+                rc = cmd_sync(args, cfg)
+
+            self.assertEqual(rc, 0)
+            self.assertIn("WARNING: [plugins.demo] is enabled but provider code was not discovered.", stderr.getvalue())
+            self.assertIn("No providers enabled; nothing to sync.", stdout.getvalue())
 
     def test_cmd_sync_continues_when_one_provider_fails_and_returns_nonzero(self) -> None:
         with tempfile.TemporaryDirectory() as td:

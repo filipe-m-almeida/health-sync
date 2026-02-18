@@ -1,14 +1,20 @@
 from __future__ import annotations
 
-import json
 import secrets
 from datetime import UTC, datetime, timedelta
-from urllib.parse import quote, urlencode, urlparse
 
 import requests
 
 from ..config import LoadedConfig, require_str
 from ..db import HealthSyncDb
+from .runtime import (
+    build_auth_url,
+    parse_redirect_uri,
+    sync_resource,
+    token_expiring_soon,
+    token_extra,
+    upsert_item,
+)
 from ..util import (
     basic_auth_header,
     dt_to_iso_z,
@@ -17,7 +23,6 @@ from ..util import (
     oauth_listen_for_code,
     open_in_browser,
     request_json,
-    sha256_hex,
     utc_now_iso,
 )
 
@@ -40,14 +45,12 @@ def _oura_scopes(cfg: LoadedConfig) -> str:
 
 
 def _oura_redirect(cfg: LoadedConfig) -> tuple[str, int, str]:
-    redirect_uri = cfg.config.oura.redirect_uri or _oura_default_redirect_uri()
-    u = urlparse(redirect_uri)
-    if u.scheme not in ("http", "https"):
-        raise RuntimeError(f"Invalid `oura.redirect_uri`: {redirect_uri}")
-    host = u.hostname or "127.0.0.1"
-    port = u.port or (443 if u.scheme == "https" else 80)
-    path = u.path or "/callback"
-    return redirect_uri, port, path
+    spec = parse_redirect_uri(
+        cfg.config.oura.redirect_uri,
+        default_uri=_oura_default_redirect_uri(),
+        key_name="oura.redirect_uri",
+    )
+    return spec.redirect_uri, spec.listen_port, spec.callback_path
 
 
 def oura_auth(db: HealthSyncDb, cfg: LoadedConfig, *, listen_host: str = "127.0.0.1", listen_port: int = 0) -> None:
@@ -76,7 +79,16 @@ def oura_auth(db: HealthSyncDb, cfg: LoadedConfig, *, listen_host: str = "127.0.
     state = secrets.token_urlsafe(16)
     scope = _oura_scopes(cfg)
 
-    auth_url = f"{OURA_OAUTH_AUTHORIZE}?{urlencode({'response_type': 'code', 'client_id': client_id, 'redirect_uri': redirect_uri, 'scope': scope, 'state': state}, quote_via=quote)}"
+    auth_url = build_auth_url(
+        OURA_OAUTH_AUTHORIZE,
+        {
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "scope": scope,
+            "state": state,
+        },
+    )
 
     print("Open this URL to authorize Oura:")
     print(auth_url)
@@ -120,7 +132,10 @@ def oura_auth(db: HealthSyncDb, cfg: LoadedConfig, *, listen_host: str = "127.0.
         token_type=token_type,
         scope=scope_resp,
         expires_at=expires_at,
-        extra={k: v for k, v in token.items() if k not in {"access_token", "refresh_token", "token_type", "scope", "expires_in"}},
+        extra=token_extra(
+            token,
+            excluded=("access_token", "refresh_token", "token_type", "scope", "expires_in"),
+        ),
     )
     print("Stored Oura OAuth token in DB.")
 
@@ -146,12 +161,7 @@ def _oura_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: requests.
     if not refresh_token or not expires_at:
         return access_token
 
-    try:
-        exp = iso_to_dt(expires_at)
-    except Exception:  # noqa: BLE001
-        exp = datetime.now(UTC) - timedelta(days=1)
-
-    if exp - datetime.now(UTC) > timedelta(seconds=60):
+    if not token_expiring_soon(expires_at, skew_seconds=60):
         return access_token
 
     client_id = require_str(cfg, cfg.config.oura.client_id, key="oura.client_id")
@@ -187,7 +197,10 @@ def _oura_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: requests.
         token_type=token_type,
         scope=scope_resp,
         expires_at=new_expires_at,
-        extra={k: v for k, v in token.items() if k not in {"access_token", "refresh_token", "token_type", "scope", "expires_in"}},
+        extra=token_extra(
+            token,
+            excluded=("access_token", "refresh_token", "token_type", "scope", "expires_in"),
+        ),
     )
     return new_access
 
@@ -266,104 +279,93 @@ def oura_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
     print("Syncing Oura...")
 
     # personal_info (single object)
-    with db.sync_run(provider=OURA_PROVIDER, resource="personal_info") as run:
-        with db.transaction():
-            items = _oura_fetch_all(sess, access_token=access_token, path="/v2/usercollection/personal_info")
-            if items:
-                op = db.upsert_record(
-                    provider=OURA_PROVIDER,
-                    resource="personal_info",
-                    record_id="me",
-                    payload=items[0],
-                    start_time=None,
-                    end_time=None,
-                    source_updated_at=None,
-                    fetched_at=utc_now_iso(),
-                )
-                run.add_upsert(op)
-            db.set_sync_state(provider=OURA_PROVIDER, resource="personal_info", watermark=utc_now_iso())
+    with sync_resource(db, provider=OURA_PROVIDER, resource="personal_info") as run:
+        items = _oura_fetch_all(sess, access_token=access_token, path="/v2/usercollection/personal_info")
+        if items:
+            op = db.upsert_record(
+                provider=OURA_PROVIDER,
+                resource="personal_info",
+                record_id="me",
+                payload=items[0],
+                start_time=None,
+                end_time=None,
+                source_updated_at=None,
+                fetched_at=utc_now_iso(),
+            )
+            run.add_upsert(op)
+        db.set_sync_state(provider=OURA_PROVIDER, resource="personal_info", watermark=utc_now_iso())
 
     # date-window collections
     for name, path in resources:
-        with db.sync_run(provider=OURA_PROVIDER, resource=name) as run:
-            with db.transaction():
-                state = db.get_sync_state(provider=OURA_PROVIDER, resource=name)
-                if state and state.watermark:
-                    # Re-fetch a small overlap to catch backfilled/edited data.
-                    wm_dt = iso_to_dt(state.watermark)
-                    start_dt = wm_dt - timedelta(days=overlap_days)
-                    start_s = start_dt.date().isoformat()
-                else:
-                    start_s = start_date
+        with sync_resource(db, provider=OURA_PROVIDER, resource=name) as run:
+            state = db.get_sync_state(provider=OURA_PROVIDER, resource=name)
+            if state and state.watermark:
+                # Re-fetch a small overlap to catch backfilled/edited data.
+                wm_dt = iso_to_dt(state.watermark)
+                start_dt = wm_dt - timedelta(days=overlap_days)
+                start_s = start_dt.date().isoformat()
+            else:
+                start_s = start_date
 
-                end_s = sleep_end_date if name == "sleep" else today
-                params = {"start_date": start_s, "end_date": end_s}
-                items = _oura_fetch_all(sess, access_token=access_token, path=path, params=params)
+            end_s = sleep_end_date if name == "sleep" else today
+            params = {"start_date": start_s, "end_date": end_s}
+            items = _oura_fetch_all(sess, access_token=access_token, path=path, params=params)
 
-                for item in items:
-                    stable = json.dumps(item, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-                    record_id = str(item.get("id") or item.get("day") or item.get("timestamp") or sha256_hex(stable))
-                    start_time = item.get("day") or item.get("start_datetime") or item.get("timestamp") or item.get("start_time")
-                    end_time = item.get("end_datetime") or item.get("end_time")
-                    updated_at = item.get("updated_at") or item.get("modified_at") or item.get("timestamp")
-                    op = db.upsert_record(
-                        provider=OURA_PROVIDER,
-                        resource=name,
-                        record_id=record_id,
-                        payload=item,
-                        start_time=start_time,
-                        end_time=end_time,
-                        source_updated_at=updated_at,
-                    )
-                    run.add_upsert(op)
+            for item in items:
+                upsert_item(
+                    db,
+                    run,
+                    provider=OURA_PROVIDER,
+                    resource=name,
+                    item=item,
+                    record_id_keys=("id", "day", "timestamp"),
+                    start_keys=("day", "start_datetime", "timestamp", "start_time"),
+                    end_keys=("end_datetime", "end_time"),
+                    updated_keys=("updated_at", "modified_at", "timestamp"),
+                )
 
-                # Canonical UTC watermark for this resource.
-                db.set_sync_state(provider=OURA_PROVIDER, resource=name, watermark=utc_now_iso())
+            # Canonical UTC watermark for this resource.
+            db.set_sync_state(provider=OURA_PROVIDER, resource=name, watermark=utc_now_iso())
 
     # time-series collections (HR): delta by last stored timestamp.
     for name, path in ts_resources:
-        with db.sync_run(provider=OURA_PROVIDER, resource=name) as run:
-            with db.transaction():
-                max_ts = db.get_max_start_time(provider=OURA_PROVIDER, resource=name)
-                if max_ts:
-                    try:
-                        start_dt = iso_to_dt(max_ts) - timedelta(days=1)
-                    except Exception:  # noqa: BLE001
-                        start_dt = datetime.now(UTC) - timedelta(days=overlap_days)
-                else:
-                    start_dt = parse_yyyy_mm_dd(start_date)
+        with sync_resource(db, provider=OURA_PROVIDER, resource=name) as run:
+            max_ts = db.get_max_start_time(provider=OURA_PROVIDER, resource=name)
+            if max_ts:
+                try:
+                    start_dt = iso_to_dt(max_ts) - timedelta(days=1)
+                except Exception:  # noqa: BLE001
+                    start_dt = datetime.now(UTC) - timedelta(days=overlap_days)
+            else:
+                start_dt = parse_yyyy_mm_dd(start_date)
 
-                end_dt = datetime.now(UTC)
-                # Oura will reject very large time windows for time-series endpoints
-                # (e.g., requesting many years at once), so we fetch in chunks.
-                chunk_days = 30
-                chunk = timedelta(days=chunk_days)
-                print(f"- {name}: {dt_to_iso_z(start_dt)} -> {dt_to_iso_z(end_dt)} ({chunk_days}-day chunks)")
-                cur = start_dt
-                while cur < end_dt:
-                    chunk_end = min(end_dt, cur + chunk)
-                    params = {"start_datetime": dt_to_iso_z(cur), "end_datetime": dt_to_iso_z(chunk_end)}
-                    items = _oura_fetch_all(sess, access_token=access_token, path=path, params=params)
+            end_dt = datetime.now(UTC)
+            # Oura will reject very large time windows for time-series endpoints
+            # (e.g., requesting many years at once), so we fetch in chunks.
+            chunk_days = 30
+            chunk = timedelta(days=chunk_days)
+            print(f"- {name}: {dt_to_iso_z(start_dt)} -> {dt_to_iso_z(end_dt)} ({chunk_days}-day chunks)")
+            cur = start_dt
+            while cur < end_dt:
+                chunk_end = min(end_dt, cur + chunk)
+                params = {"start_datetime": dt_to_iso_z(cur), "end_datetime": dt_to_iso_z(chunk_end)}
+                items = _oura_fetch_all(sess, access_token=access_token, path=path, params=params)
 
-                    for item in items:
-                        # HR samples have timestamps; use them as stable ids.
-                        ts = item.get("timestamp") or item.get("time") or item.get("datetime")
-                        stable = json.dumps(item, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-                        record_id = str(item.get("id") or ts or sha256_hex(stable))
-                        op = db.upsert_record(
-                            provider=OURA_PROVIDER,
-                            resource=name,
-                            record_id=record_id,
-                            payload=item,
-                            start_time=ts,
-                            end_time=None,
-                            source_updated_at=ts,
-                        )
-                        run.add_upsert(op)
+                for item in items:
+                    upsert_item(
+                        db,
+                        run,
+                        provider=OURA_PROVIDER,
+                        resource=name,
+                        item=item,
+                        record_id_keys=("id", "timestamp", "time", "datetime"),
+                        start_keys=("timestamp", "time", "datetime"),
+                        updated_keys=("timestamp", "time", "datetime"),
+                    )
 
-                    # Advance window. We don't add an overlap here; record ids dedupe anyway.
-                    cur = chunk_end
+                # Advance window. We don't add an overlap here; record ids dedupe anyway.
+                cur = chunk_end
 
-                db.set_sync_state(provider=OURA_PROVIDER, resource=name, watermark=dt_to_iso_z(end_dt))
+            db.set_sync_state(provider=OURA_PROVIDER, resource=name, watermark=dt_to_iso_z(end_dt))
 
     print("Oura sync complete.")

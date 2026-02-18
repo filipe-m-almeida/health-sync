@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import dataclass
 
 from .config import DEFAULT_CONFIG_FILENAME, LoadedConfig, load_config
 from .db import HealthSyncDb
-from .plugins import PluginHelpers, load_provider_plugins, provider_enabled
+from .plugins import BUILTIN_PROVIDER_IDS, PluginHelpers, load_provider_plugins, provider_enabled
 
 
 def _add_common_cli_flags(parser: argparse.ArgumentParser, *, suppress_defaults: bool = False) -> None:
@@ -36,8 +37,7 @@ def cmd_init_db(args: argparse.Namespace, cfg: LoadedConfig) -> int:
 
 
 def _enable_hint(provider_id: str) -> str:
-    builtin = {"oura", "withings", "hevy", "strava", "eightsleep"}
-    if provider_id in builtin:
+    if provider_id in BUILTIN_PROVIDER_IDS:
         return f"[{provider_id}].enabled = true"
     return f"[plugins.{provider_id}].enabled = true"
 
@@ -47,17 +47,67 @@ def _resolve_plugins(cfg: LoadedConfig) -> dict[str, object]:
     return dict(plugins)
 
 
+def _known_providers_text(plugins: dict[str, object]) -> str:
+    return ", ".join(sorted(plugins.keys())) if plugins else "(none)"
+
+
+def _validate_known_providers(
+    requested: list[str],
+    plugins: dict[str, object],
+    *,
+    singular: bool = False,
+) -> None:
+    unknown = [p for p in requested if p not in plugins]
+    if not unknown:
+        return
+    known = _known_providers_text(plugins)
+    if singular and len(unknown) == 1:
+        raise RuntimeError(
+            f"Unknown provider `{unknown[0]}`. Available providers: {known}. "
+            "Use `health-sync providers` to inspect discovery/config status."
+        )
+    raise RuntimeError(
+        f"Unknown provider(s): {', '.join(unknown)}. Available providers: {known}. "
+        "Use `health-sync providers` to inspect discovery/config status."
+    )
+
+
+@dataclass(frozen=True)
+class SyncSelection:
+    requested: list[str]
+    to_sync: list[str]
+    skipped: list[str]
+
+
+def _build_sync_selection(
+    cfg: LoadedConfig,
+    plugins: dict[str, object],
+    requested: list[str] | None,
+) -> SyncSelection:
+    requested_list = list(plugins.keys()) if requested is None else list(requested)
+    _validate_known_providers(requested_list, plugins, singular=False)
+    to_sync = [p for p in requested_list if provider_enabled(cfg, p)]
+    skipped = [p for p in requested_list if not provider_enabled(cfg, p)]
+    return SyncSelection(requested=requested_list, to_sync=to_sync, skipped=skipped)
+
+
+def _warn_undiscovered_enabled_plugins(cfg: LoadedConfig, plugins: dict[str, object]) -> None:
+    # If users enabled plugin config entries but the plugin is not installed/discovered,
+    # make that failure mode explicit.
+    for provider_id in sorted(cfg.config.plugins.keys()):
+        if provider_enabled(cfg, provider_id) and provider_id not in plugins:
+            print(
+                f"WARNING: [plugins.{provider_id}] is enabled but provider code was not discovered.",
+                file=sys.stderr,
+            )
+
+
 def cmd_auth(args: argparse.Namespace, cfg: LoadedConfig) -> int:
     plugins = _resolve_plugins(cfg)
     helpers = PluginHelpers()
 
-    plugin = plugins.get(args.provider)
-    if plugin is None:
-        known = ", ".join(sorted(plugins.keys())) if plugins else "(none)"
-        raise RuntimeError(
-            f"Unknown provider `{args.provider}`. Available providers: {known}. "
-            "Use `health-sync providers` to inspect discovery/config status."
-        )
+    _validate_known_providers([args.provider], plugins, singular=True)
+    plugin = plugins[args.provider]
 
     if not bool(getattr(plugin, "supports_auth", False)):
         raise RuntimeError(f"Provider `{args.provider}` does not support auth.")
@@ -71,45 +121,22 @@ def cmd_auth(args: argparse.Namespace, cfg: LoadedConfig) -> int:
 def cmd_sync(args: argparse.Namespace, cfg: LoadedConfig) -> int:
     plugins = _resolve_plugins(cfg)
     helpers = PluginHelpers()
-
-    if args.providers is None:
-        providers = list(plugins.keys())
-    else:
-        providers = list(args.providers)
-        unknown = [p for p in providers if p not in plugins]
-        if unknown:
-            known = ", ".join(sorted(plugins.keys())) if plugins else "(none)"
-            raise RuntimeError(
-                "Unknown provider(s): "
-                f"{', '.join(unknown)}. Available providers: {known}. "
-                "Use `health-sync providers` to inspect discovery/config status."
-            )
-
-    # If users enabled plugin config entries but the plugin is not installed/discovered,
-    # make that failure mode explicit.
-    for provider_id in sorted(cfg.config.plugins.keys()):
-        if provider_enabled(cfg, provider_id) and provider_id not in plugins:
-            print(
-                f"WARNING: [plugins.{provider_id}] is enabled but provider code was not discovered.",
-                file=sys.stderr,
-            )
-
-    to_sync = [p for p in providers if provider_enabled(cfg, p)]
-    skipped = [p for p in providers if not provider_enabled(cfg, p)]
+    selection = _build_sync_selection(cfg, plugins, args.providers)
+    _warn_undiscovered_enabled_plugins(cfg, plugins)
 
     with HealthSyncDb(args.db) as db:
         db.init()
 
-        for p in skipped:
+        for p in selection.skipped:
             print(f"Skipping {p}: disabled in config (set {_enable_hint(p)}).")
 
-        if not to_sync:
+        if not selection.to_sync:
             if args.providers is None:
                 print(
                     "No providers enabled; nothing to sync. "
                     f"Enable one or more providers in {cfg.path} (e.g. set {_enable_hint('hevy')})."
                 )
-            elif providers:
+            elif selection.requested:
                 print("No enabled providers selected; nothing to sync.")
             else:
                 print("No providers specified; nothing to sync.")
@@ -118,9 +145,10 @@ def cmd_sync(args: argparse.Namespace, cfg: LoadedConfig) -> int:
         successes = 0
         failures: list[tuple[str, Exception]] = []
 
-        for p in to_sync:
+        for p in selection.to_sync:
             try:
-                plugins[p].sync(db, cfg, helpers)
+                plugin = plugins[p]
+                plugin.sync(db, cfg, helpers)  # type: ignore[attr-defined]
                 successes += 1
             except Exception as e:  # noqa: BLE001
                 failures.append((p, e))
@@ -129,7 +157,7 @@ def cmd_sync(args: argparse.Namespace, cfg: LoadedConfig) -> int:
         if failures:
             failed_names = ", ".join(p for p, _ in failures)
             print(
-                f"Sync completed with warnings ({len(failures)}/{len(to_sync)} providers failed): {failed_names}",
+                f"Sync completed with warnings ({len(failures)}/{len(selection.to_sync)} providers failed): {failed_names}",
                 file=sys.stderr,
             )
 

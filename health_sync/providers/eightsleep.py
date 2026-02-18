@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 
 import requests
 
 from ..config import LoadedConfig, require_str
 from ..db import HealthSyncDb
+from .runtime import stable_json, sync_resource, token_expiring_soon, token_extra
 from ..util import iso_to_dt, parse_yyyy_mm_dd, request_json, sha256_hex, utc_now_iso
 
 
@@ -56,8 +56,7 @@ def _eightsleep_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: req
 
     tok = db.get_oauth_token(EIGHTSLEEP_PROVIDER)
     if tok:
-        expires_at = _parse_date(tok.get("expires_at"))
-        if expires_at and (expires_at - datetime.now(UTC)).total_seconds() > 60:
+        if not token_expiring_soon(tok.get("expires_at"), skew_seconds=60):
             return tok["access_token"]
 
     auth_url = cfg.config.eightsleep.auth_url.rstrip("/")
@@ -96,7 +95,7 @@ def _eightsleep_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: req
         token_type="Bearer",
         scope=None,
         expires_at=expires_at,
-        extra={k: v for k, v in token.items() if k not in {"access_token", "expires_in"}},
+        extra=token_extra(token, excluded=("access_token", "expires_in")),
     )
     return access_token
 
@@ -127,19 +126,18 @@ def eightsleep_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
     me_user = me_resp.get("user") if isinstance(me_resp, dict) else None
     me_id = str((me_user or {}).get("id") or "me")
 
-    with db.sync_run(provider=EIGHTSLEEP_PROVIDER, resource="users_me") as run_users_me:
-        with db.transaction():
-            op = db.upsert_record(
-                provider=EIGHTSLEEP_PROVIDER,
-                resource="users_me",
-                record_id=me_id,
-                payload=me_resp,
-                start_time=None,
-                end_time=None,
-                source_updated_at=utc_now_iso(),
-            )
-            run_users_me.add_upsert(op)
-            db.set_sync_state(provider=EIGHTSLEEP_PROVIDER, resource="users_me", watermark=utc_now_iso())
+    with sync_resource(db, provider=EIGHTSLEEP_PROVIDER, resource="users_me") as run_users_me:
+        op = db.upsert_record(
+            provider=EIGHTSLEEP_PROVIDER,
+            resource="users_me",
+            record_id=me_id,
+            payload=me_resp,
+            start_time=None,
+            end_time=None,
+            source_updated_at=utc_now_iso(),
+        )
+        run_users_me.add_upsert(op)
+        db.set_sync_state(provider=EIGHTSLEEP_PROVIDER, resource="users_me", watermark=utc_now_iso())
 
     user_ids: set[str] = set()
     if me_id != "me":
@@ -163,19 +161,18 @@ def eightsleep_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
                     if uid:
                         user_ids.add(str(uid))
 
-        with db.sync_run(provider=EIGHTSLEEP_PROVIDER, resource="devices") as run_devices:
-            with db.transaction():
-                op = db.upsert_record(
-                    provider=EIGHTSLEEP_PROVIDER,
-                    resource="devices",
-                    record_id=device_id,
-                    payload=device_resp,
-                    start_time=None,
-                    end_time=None,
-                    source_updated_at=utc_now_iso(),
-                )
-                run_devices.add_upsert(op)
-                db.set_sync_state(provider=EIGHTSLEEP_PROVIDER, resource="devices", watermark=utc_now_iso())
+        with sync_resource(db, provider=EIGHTSLEEP_PROVIDER, resource="devices") as run_devices:
+            op = db.upsert_record(
+                provider=EIGHTSLEEP_PROVIDER,
+                resource="devices",
+                record_id=device_id,
+                payload=device_resp,
+                start_time=None,
+                end_time=None,
+                source_updated_at=utc_now_iso(),
+            )
+            run_devices.add_upsert(op)
+            db.set_sync_state(provider=EIGHTSLEEP_PROVIDER, resource="devices", watermark=utc_now_iso())
 
     total_profiles = 0
     total_trends = 0
@@ -219,9 +216,8 @@ def eightsleep_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
                     for day in days:
                         if not isinstance(day, dict):
                             continue
-                        stable = json.dumps(day, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
                         day_key = day.get("day")
-                        rid = f"{user_id}:{day_key}" if day_key else f"{user_id}:{sha256_hex(stable)}"
+                        rid = f"{user_id}:{day_key}" if day_key else f"{user_id}:{sha256_hex(stable_json(day))}"
                         start_time = day.get("day") or day.get("presenceStart")
                         end_time = day.get("presenceEnd")
                         source_updated_at = day.get("updatedAt") or day.get("presenceStart") or start_time

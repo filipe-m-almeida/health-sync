@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, timedelta
 
 import requests
 
 from ..config import LoadedConfig
 from ..db import HealthSyncDb
+from .runtime import first_present, sync_resource, upsert_item
 from ..util import iso_to_dt, request_json, sha256_hex, utc_now_iso
 
 
@@ -61,46 +62,43 @@ def hevy_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
 
     if not watermark:
         # First run: fetch full list.
-        with db.sync_run(provider=HEVY_PROVIDER, resource="workouts") as run_workouts:
-            with db.transaction():
-                page = 1
-                max_updated: str | None = None
-                while True:
-                    j = request_json(
-                        sess,
-                        "GET",
-                        f"{base_url}/v1/workouts",
-                        headers=_hevy_headers(api_key),
-                        params={"page": page, "pageSize": page_size},
+        with sync_resource(db, provider=HEVY_PROVIDER, resource="workouts") as run_workouts:
+            page = 1
+            max_updated: str | None = None
+            while True:
+                j = request_json(
+                    sess,
+                    "GET",
+                    f"{base_url}/v1/workouts",
+                    headers=_hevy_headers(api_key),
+                    params={"page": page, "pageSize": page_size},
+                )
+
+                workouts = j.get("workouts") or []
+                for w in workouts:
+                    if not isinstance(w, dict):
+                        continue
+                    updated_at = first_present(w, ("updated_at", "created_at"))
+                    max_updated = _iso_max(max_updated, str(updated_at) if updated_at is not None else None)
+                    upsert_item(
+                        db,
+                        run_workouts,
+                        provider=HEVY_PROVIDER,
+                        resource="workouts",
+                        item=w,
+                        record_id_keys=("id",),
+                        start_keys=("start_time",),
+                        end_keys=("end_time",),
+                        updated_keys=("updated_at", "created_at"),
                     )
 
-                    workouts = j.get("workouts") or []
-                    for w in workouts:
-                        if not isinstance(w, dict):
-                            continue
-                        rid = str(w.get("id") or sha256_hex(str(w)))
-                        start_time = w.get("start_time")
-                        end_time = w.get("end_time")
-                        updated_at = w.get("updated_at") or w.get("created_at")
-                        max_updated = _iso_max(max_updated, updated_at)
-                        op = db.upsert_record(
-                            provider=HEVY_PROVIDER,
-                            resource="workouts",
-                            record_id=rid,
-                            payload=w,
-                            start_time=start_time,
-                            end_time=end_time,
-                            source_updated_at=updated_at,
-                        )
-                        run_workouts.add_upsert(op)
+                page_count = j.get("page_count")
+                if isinstance(page_count, int) and page < page_count:
+                    page += 1
+                    continue
+                break
 
-                    page_count = j.get("page_count")
-                    if isinstance(page_count, int) and page < page_count:
-                        page += 1
-                        continue
-                    break
-
-                db.set_sync_state(provider=HEVY_PROVIDER, resource="workouts", watermark=max_updated or utc_now_iso())
+            db.set_sync_state(provider=HEVY_PROVIDER, resource="workouts", watermark=max_updated or utc_now_iso())
         print("Hevy initial backfill complete.")
         return
 
@@ -134,29 +132,29 @@ def hevy_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
                             w = ev.get("workout") or {}
                             if isinstance(w, dict):
                                 rid = str(w.get("id") or sha256_hex(str(w)))
-                                start_time = w.get("start_time")
-                                end_time = w.get("end_time")
-                                updated_at = w.get("updated_at") or w.get("created_at")
-                                max_event_time = _iso_max(max_event_time, updated_at)
-                                op = db.upsert_record(
+                                updated_at = first_present(w, ("updated_at", "created_at"))
+                                updated_at_s = str(updated_at) if updated_at is not None else None
+                                max_event_time = _iso_max(max_event_time, updated_at_s)
+                                upsert_item(
+                                    db,
+                                    run_workouts,
                                     provider=HEVY_PROVIDER,
                                     resource="workouts",
-                                    record_id=rid,
-                                    payload=w,
-                                    start_time=start_time,
-                                    end_time=end_time,
-                                    source_updated_at=updated_at,
+                                    item=w,
+                                    record_id_keys=("id",),
+                                    start_keys=("start_time",),
+                                    end_keys=("end_time",),
+                                    updated_keys=("updated_at", "created_at"),
                                 )
-                                run_workouts.add_upsert(op)
                                 # Optional audit trail.
                                 op_event = db.upsert_record(
                                     provider=HEVY_PROVIDER,
                                     resource="workout_events",
-                                    record_id=f"updated:{rid}:{updated_at or utc_now_iso()}",
+                                    record_id=f"updated:{rid}:{updated_at_s or utc_now_iso()}",
                                     payload=ev,
-                                    start_time=updated_at,
+                                    start_time=updated_at_s,
                                     end_time=None,
-                                    source_updated_at=updated_at,
+                                    source_updated_at=updated_at_s,
                                 )
                                 run_events.add_upsert(op_event)
                         elif ev_type == "deleted":
