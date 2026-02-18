@@ -1,19 +1,46 @@
 # health-sync
 
-Sync your health data from:
+`health-sync` is an open-source CLI that pulls health and fitness data from multiple providers and stores it in a local SQLite database.
 
-- Oura Cloud API (v2)
-- Withings Advanced Health Data API
-- Hevy public API (Pro-only, `api-key` header)
-- Strava API (OAuth2)
+It is designed as a personal data cache: first sync backfills history, then future syncs fetch incremental updates.
+
+## Purpose
+
+- Keep your health data in one local database you control.
+- Build your own dashboards, analysis scripts, or exports on top of raw provider data.
+- Avoid building one-off sync scripts for each provider.
+
+## Supported Providers
+
+- Oura (Cloud API v2, PAT or OAuth2)
+- Withings (Advanced Health Data API, OAuth2)
+- Hevy (public API, API key, Pro account required)
+- Strava (OAuth2 or static access token)
 - Eight Sleep (unofficial API)
 
-into a local SQLite database.
+## Requirements
 
-This repo was scaffolded as a pragmatic “local cache” tool:
+- Python 3.11+
+- SQLite (included with Python)
+- Provider credentials (API key and/or OAuth client settings depending on provider)
 
-- First run: backfills history (bounded by optional start-date config values).
-- Subsequent runs: fetch deltas (Withings `lastupdate`, Hevy workout events, Oura date windows with overlap, Strava activity windows with overlap, Eight Sleep trend windows with overlap).
+## Installation
+
+Using `uv` (recommended):
+
+```bash
+uv venv
+. .venv/bin/activate
+uv pip install -e .
+```
+
+Alternative with `pip`:
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -e .
+```
 
 ## Quick Start
 
@@ -23,217 +50,111 @@ This repo was scaffolded as a pragmatic “local cache” tool:
 cp health-sync.example.toml health-sync.toml
 ```
 
-Fill in `health-sync.toml` (DB path, API keys, OAuth client ids/secrets).
+2. Edit `health-sync.toml`:
+- Set `[app].db` if you do not want `./health.sqlite`
+- Enable the providers you want (`enabled = true`)
+- Add provider credentials
 
-2. Install deps with `uv`:
-
-```bash
-uv venv
-. .venv/bin/activate
-uv pip install -e .
-```
-
-3. Initialize DB:
+3. Initialize the database:
 
 ```bash
 health-sync init-db
 ```
 
-4. Authenticate providers (choose what you use):
-
-Auth UX note:
-
-- During `health-sync auth ...`, the local callback listener still runs as before.
-- If callback routing is inconvenient (remote host, separate browser device), you can paste the final redirected callback URL (or just `code`) directly into the terminal.
-
-### Oura
-
-Option A (simplest): Personal Access Token
-
-Set `oura.access_token` in `health-sync.toml`.
-
-Option B: OAuth2 (Authorization Code)
-
-Set `oura.client_id`, `oura.client_secret`, and `oura.redirect_uri` in `health-sync.toml`, then run:
+4. Run provider auth when needed:
 
 ```bash
 health-sync auth oura
-```
-
-### Withings (OAuth2)
-
-Set `withings.client_id`, `withings.client_secret`, and `withings.redirect_uri` in `health-sync.toml`, then run:
-
-```bash
 health-sync auth withings
-```
-
-Withings token exchange uses their `nonce` + HMAC signature protocol (implemented in this repo).
-
-### Hevy
-
-Hevy’s API is Pro-only; you get your API key at `https://hevy.com/settings?developer`.
-
-Set `hevy.api_key` in `health-sync.toml`.
-
-### Strava (OAuth2)
-
-Set `strava.client_id`, `strava.client_secret`, and `strava.redirect_uri` in `health-sync.toml`, then run:
-
-```bash
 health-sync auth strava
 ```
 
-### Eight Sleep
-
-Set `eightsleep.email`, `eightsleep.password`, `eightsleep.client_id`, and
-`eightsleep.client_secret` in `health-sync.toml`.
-
-This provider uses unofficial endpoints and authenticates during `health-sync sync` (no separate browser auth step).
-
-5. Enable the providers you actually want to sync (defaults to disabled):
-
-- Set `[oura].enabled = true` to sync Oura
-- Set `[withings].enabled = true` to sync Withings
-- Set `[hevy].enabled = true` to sync Hevy
-- Set `[strava].enabled = true` to sync Strava
-- Set `[eightsleep].enabled = true` to sync Eight Sleep
-
-6. Sync:
+5. Sync data:
 
 ```bash
 health-sync sync
 ```
 
-## Configuration (TOML)
-
-By default, `health-sync` reads `./health-sync.toml` (relative to your current working directory).
-You can override it via `--config /path/to/health-sync.toml`.
-
-All config keys live in the example file: `health-sync.example.toml`.
-
-Common:
-
-- `[app].db`: Path to SQLite DB (default: `./health.sqlite`)
-
-Oura:
-
-- `[oura].enabled`: Set to `true` to sync Oura (default: `false`)
-- `[oura].access_token`: Oura PAT (simplest)
-- `[oura].client_id`, `[oura].client_secret`, `[oura].redirect_uri`: OAuth2
-- Note: for local OAuth, use `http://localhost:8484/callback`. Oura rejects `http://127.0.0.1:...` with `400 invalid_request`.
-- `[oura].start_date`: YYYY-MM-DD (default: `2010-01-01`)
-- `[oura].overlap_days`: Re-fetch overlap window on each sync (default: `7`)
-
-Withings:
-
-- `[withings].enabled`: Set to `true` to sync Withings (default: `false`)
-- `[withings].client_id`, `[withings].client_secret`, `[withings].redirect_uri`: OAuth2
-- `[withings].scopes`: OAuth scopes (default: `user.metrics,user.activity`). Note: sleep endpoints are included in `user.activity` (there is no `user.sleep` scope).
-- `[withings].overlap_seconds`: Re-fetch overlap window on each sync (default: `300`)
-- `[withings].meastypes`: Optional list of measure type ids (default is a broad list)
-
-Hevy:
-
-- `[hevy].enabled`: Set to `true` to sync Hevy (default: `false`)
-- `[hevy].api_key`: Hevy API key
-- `[hevy].base_url`: Override API base (default: `https://api.hevyapp.com`)
-- `[hevy].overlap_seconds`: Re-fetch overlap for events (default: `300`)
-- `[hevy].page_size`: 1-10 (default: `10`)
-- `[hevy].since`: Fallback ISO timestamp used if watermark parsing fails (default: `1970-01-01T00:00:00Z`)
-
-Strava:
-
-- `[strava].enabled`: Set to `true` to sync Strava (default: `false`)
-- `[strava].access_token`: Optional static bearer token
-- `[strava].client_id`, `[strava].client_secret`, `[strava].redirect_uri`: OAuth2
-- `[strava].scopes`: OAuth scopes (default: `read,activity:read_all`)
-- `[strava].approval_prompt`: OAuth approval prompt (default: `auto`)
-- `[strava].start_date`: YYYY-MM-DD (default: `2010-01-01`)
-- `[strava].overlap_seconds`: Re-fetch overlap window on each sync (default: `604800`)
-- `[strava].page_size`: 1-200 (default: `100`)
-
-Eight Sleep:
-
-- `[eightsleep].enabled`: Set to `true` to sync Eight Sleep (default: `false`)
-- `[eightsleep].access_token`: Optional static bearer token
-- `[eightsleep].email`, `[eightsleep].password`: Account credentials for token retrieval
-- `[eightsleep].client_id`, `[eightsleep].client_secret`: Required for password-grant auth flow
-- `[eightsleep].auth_url`: Auth host (default: `https://auth-api.8slp.net/v1/tokens`)
-- `[eightsleep].client_api_url`: Client API host (default: `https://client-api.8slp.net/v1`)
-- `[eightsleep].timezone`: Timezone used for trends query windows (default: `UTC`)
-- `[eightsleep].start_date`: YYYY-MM-DD (default: `2010-01-01`)
-- `[eightsleep].overlap_days`: Re-fetch overlap days on each sync (default: `2`)
-
-### External plugins (in-process)
-
-`health-sync` can discover external provider plugins at runtime. Plugins run in-process and use the same DB schema.
-
-Discovery options:
-
-1. **Python entry points** (`health_sync.providers`) from installed packages.
-2. **Config module path** in `health-sync.toml` via `[plugins.<id>].module = "pkg.module:provider"`.
-
-Enablement:
-
-- Built-ins still use `[oura].enabled`, `[withings].enabled`, etc.
-- External plugins use `[plugins.<id>].enabled = true`.
-
-Inspect discovered providers:
+6. Inspect sync state and counts:
 
 ```bash
-health-sync providers
+health-sync status
 ```
 
-Expected plugin object contract:
+## Basic Configuration
 
-- `id: str`
-- `sync(db, cfg, helpers)`
-- Optional `auth(db, cfg, helpers, listen_host, listen_port)`
-- Optional metadata: `supports_auth`, `description`
+By default, `health-sync` reads `./health-sync.toml`.
 
-Helpers passed to plugins (`helpers`) include:
+Use a custom config file with:
 
-- `helpers.config_for(cfg, provider_id)` → dict from `[plugins.<provider_id>]`
-- `helpers.is_enabled(cfg, provider_id)`
-- `helpers.require_str(cfg, provider_id, key)`
-
-Example external package entry point:
-
-```toml
-[project.entry-points."health_sync.providers"]
-garmin = "health_sync_garmin.plugin:provider"
+```bash
+health-sync --config /path/to/health-sync.toml sync
 ```
 
-Example config for module-path loading:
+Minimal example:
 
 ```toml
-[plugins.garmin]
+[app]
+db = "./health.sqlite"
+
+[hevy]
 enabled = true
-module = "health_sync_garmin.plugin:provider"
-client_id = "..."
-client_secret = "..."
-redirect_uri = "http://localhost:8487/callback"
+api_key = "YOUR_HEVY_API_KEY"
+
+[strava]
+enabled = true
+client_id = "YOUR_CLIENT_ID"
+client_secret = "YOUR_CLIENT_SECRET"
+redirect_uri = "http://127.0.0.1:8486/callback"
 ```
 
-## Database Layout (high level)
+See `health-sync.example.toml` for all provider options.
 
-- `records`: generic JSON records keyed by `(provider, resource, record_id)`.
-- `sync_state`: per `(provider, resource)` watermarks/cursors.
-- `oauth_tokens`: stored access/refresh tokens for OAuth providers.
+## CLI Commands
 
-The schema is intentionally generic: it stores raw provider JSON so you can reprocess later without
-needing migrations for every upstream schema change.
+- `health-sync init-db`: create DB tables
+- `health-sync auth <provider>`: run auth flow for one provider/plugin
+- `health-sync sync`: run sync for all enabled providers
+- `health-sync sync --providers oura strava`: sync only selected providers
+- `health-sync providers`: list discovered providers and whether they are enabled
+- `health-sync status`: print watermarks, record counts, and recent runs
 
-## Notes / Caveats
+Global flags:
 
-- Oura does not expose a universal “updated_since” parameter across all endpoints, so this tool
-  implements delta sync by re-fetching a small overlapping window based on your last successful
-  watermark.
-- Withings supports true delta sync using `lastupdate` and `modified` timestamps.
-- Hevy supports true delta sync for workouts via `/v1/workouts/events` (updated/deleted).
-- Strava activity sync uses `after` (epoch seconds) plus a configurable overlap window.
-- Eight Sleep sync is based on unofficial endpoints and may break if Eight Sleep changes API behavior.
+- `--config`: config file path
+- `--db`: override SQLite DB path
+
+## Data Storage
+
+The database keeps raw JSON payloads and sync metadata in generic tables:
+
+- `records`: provider/resource records
+- `sync_state`: per-resource watermarks/cursors
+- `oauth_tokens`: stored OAuth tokens
+- `sync_runs`: run history and per-sync counters
+
+This schema is intentionally generic so upstream API changes are less likely to require migrations.
+
+## Optional Plugin System
+
+You can add external providers as in-process plugins.
+
+- Discover installed plugins with `health-sync providers`
+- Configure plugin blocks under `[plugins.<id>]`
+- Enable them with `[plugins.<id>].enabled = true`
+
+## Notes
+
+- Eight Sleep integration uses unofficial endpoints and may break if the upstream API changes.
+- Some providers use overlap windows to ensure incremental sync correctness.
+
+## Development
+
+Run tests:
+
+```bash
+uv run pytest
+```
 
 ## License
 
