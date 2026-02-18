@@ -1,6 +1,6 @@
 ---
 name: health-sync
-description: Analyze the health-sync SQLite cache (health.sqlite) and its schema (records, sync_state, oauth_tokens). Use when querying or debugging synced health data from Oura, Withings, Hevy, Strava, or Eight Sleep; validating sync coverage/watermarks; or writing SQL that extracts fields from provider JSON payloads.
+description: Analyze the health-sync SQLite cache (health.sqlite) and its schema (`records`, `sync_state`, `oauth_tokens`, `sync_runs`). Use when querying or debugging synced health data from Oura, Withings, Hevy, Strava, or Eight Sleep; validating sync coverage/watermarks; or writing SQL that extracts fields from provider JSON payloads.
 ---
 
 # Health Sync DB Analysis
@@ -37,11 +37,29 @@ Indexes:
 
 Tracks incremental sync progress per `(provider, resource)`.
 
+Key points:
+
+- `watermark` is normalized and stored as UTC ISO (`YYYY-MM-DDTHH:MM:SSZ`) by the DB layer.
+- `cursor` is available for providers that need cursor-style pagination.
+- `extra_json` stores optional provider metadata.
+
 ### `oauth_tokens` (Secrets)
 
 Contains OAuth access/refresh tokens for providers that require it.
 
 Do not print or export this table.
+
+### `sync_runs` (Per-Sync Run Telemetry)
+
+Tracks each sync run per `(provider, resource)` and status.
+
+Key columns:
+
+- `status`: `running`, `success`, or `error`
+- `started_at`, `finished_at`
+- `watermark_before`, `watermark_after`
+- `inserted_count`, `updated_count`, `deleted_count`, `unchanged_count`
+- `error_text` (only populated on failures)
 
 ## Provider Schemas
 
