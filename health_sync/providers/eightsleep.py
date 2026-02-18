@@ -11,6 +11,8 @@ from ..util import iso_to_dt, parse_yyyy_mm_dd, request_json, sha256_hex, utc_no
 
 
 EIGHTSLEEP_PROVIDER = "eightsleep"
+EIGHTSLEEP_DEFAULT_CLIENT_ID = "0894c7f33bb94800a03f1f4df13a4f38"
+EIGHTSLEEP_DEFAULT_CLIENT_SECRET = "f0954a3ed5763ba3d06834c73731a32f15f168f47d4f164751275def86db0c76"
 
 
 def _eightsleep_auth_headers() -> dict[str, str]:
@@ -63,8 +65,16 @@ def _eightsleep_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: req
     auth_url = cfg.config.eightsleep.auth_url.rstrip("/")
     email = require_str(cfg, cfg.config.eightsleep.email, key="eightsleep.email")
     password = require_str(cfg, cfg.config.eightsleep.password, key="eightsleep.password")
-    client_id = require_str(cfg, cfg.config.eightsleep.client_id, key="eightsleep.client_id")
-    client_secret = require_str(cfg, cfg.config.eightsleep.client_secret, key="eightsleep.client_secret")
+    client_id = require_str(
+        cfg,
+        cfg.config.eightsleep.client_id or EIGHTSLEEP_DEFAULT_CLIENT_ID,
+        key="eightsleep.client_id",
+    )
+    client_secret = require_str(
+        cfg,
+        cfg.config.eightsleep.client_secret or EIGHTSLEEP_DEFAULT_CLIENT_SECRET,
+        key="eightsleep.client_secret",
+    )
 
     token = request_json(
         sess,
@@ -99,6 +109,35 @@ def _eightsleep_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: req
         extra={k: v for k, v in token.items() if k not in {"access_token", "expires_in"}},
     )
     return access_token
+
+
+def eightsleep_auth(
+    db: HealthSyncDb,
+    cfg: LoadedConfig,
+    *,
+    listen_host: str = "127.0.0.1",
+    listen_port: int = 0,
+) -> None:
+    # Signature matches other providers; this flow does not require a callback listener.
+    _ = (listen_host, listen_port)
+
+    static_access_token = cfg.config.eightsleep.access_token
+    if static_access_token:
+        db.set_oauth_token(
+            provider=EIGHTSLEEP_PROVIDER,
+            access_token=static_access_token,
+            refresh_token=None,
+            token_type="Bearer",
+            scope=None,
+            expires_at=None,
+            extra={"method": "static_access_token"},
+        )
+        print("Stored Eight Sleep access token in DB.")
+        return
+
+    sess = requests.Session()
+    _eightsleep_refresh_if_needed(db, cfg, sess)
+    print("Stored Eight Sleep token in DB.")
 
 
 def _trend_start_date(db: HealthSyncDb, cfg: LoadedConfig) -> str:

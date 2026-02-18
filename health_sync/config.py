@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Any
 
 import tomllib
@@ -94,8 +95,9 @@ class EightSleepConfig:
     # Option B: username/password grant
     email: str | None = None
     password: str | None = None
-    client_id: str | None = None
-    client_secret: str | None = None
+    # Known public Eight Sleep OAuth client values used by the official app.
+    client_id: str = "0894c7f33bb94800a03f1f4df13a4f38"
+    client_secret: str = "f0954a3ed5763ba3d06834c73731a32f15f168f47d4f164751275def86db0c76"
 
     # API hosts / sync tuning
     timezone: str = "UTC"
@@ -282,8 +284,8 @@ def load_config(path: str | Path | None = None) -> LoadedConfig:
         access_token=_get_str(raw_eightsleep, "access_token"),
         email=_get_str(raw_eightsleep, "email"),
         password=_get_str(raw_eightsleep, "password"),
-        client_id=_get_str(raw_eightsleep, "client_id"),
-        client_secret=_get_str(raw_eightsleep, "client_secret"),
+        client_id=_get_str(raw_eightsleep, "client_id") or EightSleepConfig().client_id,
+        client_secret=_get_str(raw_eightsleep, "client_secret") or EightSleepConfig().client_secret,
         timezone=_get_str(raw_eightsleep, "timezone") or EightSleepConfig().timezone,
         auth_url=_get_str(raw_eightsleep, "auth_url") or EightSleepConfig().auth_url,
         client_api_url=_get_str(raw_eightsleep, "client_api_url") or EightSleepConfig().client_api_url,
@@ -322,3 +324,91 @@ def require_str(cfg: LoadedConfig, v: str | None, *, key: str) -> str:
             f"Config file not found: {cfg.path}. Create it from `health-sync.example.toml` and set `{key}`."
         )
     raise RuntimeError(f"Missing required config value `{key}` in {cfg.path}.")
+
+
+_SECTION_HEADER_RE = re.compile(r"(?m)^\[(?P<section>[^\]\n]+)\]\s*$")
+_BUILTIN_PROVIDERS = {"oura", "withings", "hevy", "strava", "eightsleep"}
+
+
+def _toml_literal(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, str):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    raise TypeError(f"Unsupported TOML value type: {type(value).__name__}")
+
+
+def _find_section_span(content: str, section: str) -> tuple[int, int] | None:
+    matches = list(_SECTION_HEADER_RE.finditer(content))
+    for idx, match in enumerate(matches):
+        if match.group("section").strip() != section:
+            continue
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(content)
+        return start, end
+    return None
+
+
+def _upsert_section_values(content: str, section: str, updates: dict[str, Any]) -> str:
+    span = _find_section_span(content, section)
+    if span is None:
+        out = content
+        if out and not out.endswith("\n"):
+            out += "\n"
+        if out and not out.endswith("\n\n"):
+            out += "\n"
+        out += f"[{section}]\n"
+        for key, value in updates.items():
+            out += f"{key} = {_toml_literal(value)}\n"
+        return out
+
+    start, end = span
+    body = content[start:end]
+    for key, value in updates.items():
+        line = f"{key} = {_toml_literal(value)}"
+        key_re = re.compile(rf"(?m)^[ \t]*{re.escape(key)}[ \t]*=.*$")
+        if key_re.search(body):
+            body = key_re.sub(line, body, count=1)
+        else:
+            if body and not body.endswith("\n"):
+                body += "\n"
+            body += f"{line}\n"
+
+    return f"{content[:start]}{body}{content[end:]}"
+
+
+def _read_config_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+
+
+def init_config_file(path: Path, *, db_path: str) -> None:
+    cfg_path = Path(path).expanduser()
+    current = _read_config_text(cfg_path)
+    updated = _upsert_section_values(current, "app", {"db": db_path})
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(updated, encoding="utf-8")
+
+
+def scaffold_provider_config(path: Path, provider_id: str) -> None:
+    cfg_path = Path(path).expanduser()
+
+    if provider_id in _BUILTIN_PROVIDERS:
+        section = provider_id
+        updates: dict[str, Any] = {"enabled": True}
+        if provider_id == "eightsleep":
+            updates["client_id"] = EightSleepConfig().client_id
+            updates["client_secret"] = EightSleepConfig().client_secret
+    else:
+        section = f"plugins.{provider_id}"
+        updates = {"enabled": True}
+
+    current = _read_config_text(cfg_path)
+    updated = _upsert_section_values(current, section, updates)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(updated, encoding="utf-8")

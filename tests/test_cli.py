@@ -8,7 +8,7 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
-from health_sync.cli import build_parser, cmd_sync
+from health_sync.cli import build_parser, cmd_auth, cmd_init, cmd_sync
 from health_sync.config import (
     AppConfig,
     Config,
@@ -18,6 +18,7 @@ from health_sync.config import (
     OuraConfig,
     StravaConfig,
     WithingsConfig,
+    load_config,
 )
 
 
@@ -41,6 +42,11 @@ class CliArgParsingTests(unittest.TestCase):
         parser = build_parser()
         args = parser.parse_args(["providers"])
         self.assertEqual(args.cmd, "providers")
+
+    def test_init_subcommand_is_available(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["init"])
+        self.assertEqual(args.cmd, "init")
 
 
 class _FakePlugin:
@@ -141,6 +147,55 @@ class SyncResilienceTests(unittest.TestCase):
             self.assertIn("WARNING: oura sync failed: oura down", err)
             self.assertIn("WARNING: withings sync failed: withings down", err)
             self.assertIn("All selected providers failed.", err)
+
+
+class InitAndAuthScaffoldTests(unittest.TestCase):
+    def test_cmd_init_creates_config_and_db(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            config_path = Path(td) / "health-sync.toml"
+            db_path = Path(td) / "health.sqlite"
+            cfg = load_config(config_path)
+            args = argparse.Namespace(config=str(config_path), db=str(db_path))
+
+            rc = cmd_init(args, cfg)
+
+            self.assertEqual(rc, 0)
+            self.assertTrue(config_path.exists())
+            self.assertTrue(db_path.exists())
+            content = config_path.read_text(encoding="utf-8")
+            self.assertIn("[app]", content)
+            self.assertIn(str(db_path), content)
+
+    def test_cmd_auth_scaffolds_provider_section_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            config_path = Path(td) / "health-sync.toml"
+            db_path = Path(td) / "health.sqlite"
+            cfg = load_config(config_path)
+            args = argparse.Namespace(
+                provider="eightsleep",
+                listen_host="127.0.0.1",
+                listen_port=0,
+                db=str(db_path),
+            )
+
+            class _AuthPlugin:
+                id = "eightsleep"
+                source = "test"
+                description = "test"
+                supports_auth = True
+
+                def auth(self, db, cfg, helpers, *, listen_host, listen_port) -> None:  # noqa: ANN001
+                    _ = (db, cfg, helpers, listen_host, listen_port)
+
+            with patch("health_sync.cli.load_provider_plugins", return_value={"eightsleep": _AuthPlugin()}):
+                rc = cmd_auth(args, cfg)
+
+            self.assertEqual(rc, 0)
+            content = config_path.read_text(encoding="utf-8")
+            self.assertIn("[eightsleep]", content)
+            self.assertIn("enabled = true", content)
+            self.assertIn("client_id", content)
+            self.assertIn("client_secret", content)
 
 
 if __name__ == "__main__":

@@ -81,6 +81,13 @@ class PluginLoadingTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     load_provider_plugins(cfg)
 
+    def test_builtin_eightsleep_supports_auth(self) -> None:
+        with patch("health_sync.plugins.loader._iter_entry_points", return_value=[]):
+            plugins = load_provider_plugins(None)
+
+        self.assertIn("eightsleep", plugins)
+        self.assertTrue(bool(getattr(plugins["eightsleep"], "supports_auth", False)))
+
 
 if __name__ == "__main__":
     unittest.main()

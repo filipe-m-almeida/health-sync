@@ -7,7 +7,7 @@ from typing import Any
 import warnings
 
 from ..config import LoadedConfig
-from ..providers.eightsleep import eightsleep_sync
+from ..providers.eightsleep import eightsleep_auth, eightsleep_sync
 from ..providers.hevy import hevy_sync
 from ..providers.oura import oura_auth, oura_sync
 from ..providers.strava import strava_auth, strava_sync
@@ -73,7 +73,7 @@ def _builtin_plugins() -> list[ProviderPlugin]:
         FunctionalProviderPlugin(
             id="eightsleep",
             sync_fn=eightsleep_sync,
-            auth_fn=None,
+            auth_fn=eightsleep_auth,
             source="builtin",
             description="Eight Sleep (unofficial API)",
         ),

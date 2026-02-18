@@ -44,38 +44,31 @@ pip install -e .
 
 ## Quick Start
 
-1. Create a config file:
+1. Initialize config and DB:
 
 ```bash
-cp health-sync.example.toml health-sync.toml
+health-sync init
 ```
 
 2. Edit `health-sync.toml`:
 - Set `[app].db` if you do not want `./health.sqlite`
-- Enable the providers you want (`enabled = true`)
-- Add provider credentials
 
-3. Initialize the database:
-
-```bash
-health-sync init-db
-```
-
-4. Run provider auth when needed:
+3. Run provider auth one provider at a time:
 
 ```bash
 health-sync auth oura
 health-sync auth withings
 health-sync auth strava
+health-sync auth eightsleep
 ```
 
-5. Sync data:
+4. Sync data:
 
 ```bash
 health-sync sync
 ```
 
-6. Inspect sync state and counts:
+5. Inspect sync state and counts:
 
 ```bash
 health-sync status
@@ -112,12 +105,21 @@ See `health-sync.example.toml` for all provider options.
 
 ## CLI Commands
 
-- `health-sync init-db`: create DB tables
+- `health-sync init`: create/update config and create DB tables
+- `health-sync init-db`: create DB tables only (legacy)
 - `health-sync auth <provider>`: run auth flow for one provider/plugin
 - `health-sync sync`: run sync for all enabled providers
 - `health-sync sync --providers oura strava`: sync only selected providers
 - `health-sync providers`: list discovered providers and whether they are enabled
 - `health-sync status`: print watermarks, record counts, and recent runs
+
+`auth` notes:
+
+- Oura, Withings, and Strava: OAuth flow (CLI prints auth URL and waits for callback URL/code).
+- Eight Sleep: username/password grant (or static token).
+- Hevy: no `auth` command; configure `[hevy].api_key` directly.
+
+`auth` also scaffolds the provider section in `health-sync.toml` (enables it and, for Eight Sleep, writes default client id/secret if missing).
 
 Global flags:
 

@@ -3,7 +3,13 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .config import DEFAULT_CONFIG_FILENAME, LoadedConfig, load_config
+from .config import (
+    DEFAULT_CONFIG_FILENAME,
+    LoadedConfig,
+    init_config_file,
+    load_config,
+    scaffold_provider_config,
+)
 from .db import HealthSyncDb
 from .plugins import PluginHelpers, load_provider_plugins, provider_enabled
 
@@ -29,8 +35,18 @@ def _add_common_cli_flags(parser: argparse.ArgumentParser, *, suppress_defaults:
 
 
 def cmd_init_db(args: argparse.Namespace, cfg: LoadedConfig) -> int:
+    _ = cfg
     with HealthSyncDb(args.db) as db:
         db.init()
+    print(f"Initialized DB at: {args.db}")
+    return 0
+
+
+def cmd_init(args: argparse.Namespace, cfg: LoadedConfig) -> int:
+    init_config_file(cfg.path, db_path=args.db)
+    with HealthSyncDb(args.db) as db:
+        db.init()
+    print(f"Initialized config at: {cfg.path}")
     print(f"Initialized DB at: {args.db}")
     return 0
 
@@ -61,6 +77,12 @@ def cmd_auth(args: argparse.Namespace, cfg: LoadedConfig) -> int:
 
     if not bool(getattr(plugin, "supports_auth", False)):
         raise RuntimeError(f"Provider `{args.provider}` does not support auth.")
+
+    # Ensure config file and provider block exist before auth so users can run
+    # `init -> auth` without manually copying/editing scaffolding first.
+    init_config_file(cfg.path, db_path=args.db)
+    scaffold_provider_config(cfg.path, args.provider)
+    cfg = load_config(cfg.path)
 
     with HealthSyncDb(args.db) as db:
         db.init()
@@ -212,9 +234,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    p_init = sub.add_parser("init-db", help="Create tables if missing.")
+    p_init = sub.add_parser("init", help="Initialize config and create DB tables.")
     _add_common_cli_flags(p_init, suppress_defaults=True)
-    p_init.set_defaults(func=cmd_init_db)
+    p_init.set_defaults(func=cmd_init)
+
+    p_init_db = sub.add_parser("init-db", help="Create tables if missing.")
+    _add_common_cli_flags(p_init_db, suppress_defaults=True)
+    p_init_db.set_defaults(func=cmd_init_db)
 
     p_auth = sub.add_parser("auth", help="Run OAuth2 auth flow for a provider/plugin.")
     _add_common_cli_flags(p_auth, suppress_defaults=True)

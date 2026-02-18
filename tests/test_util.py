@@ -8,7 +8,7 @@ from unittest.mock import Mock, call, patch
 
 import requests
 
-from health_sync.util import _parse_retry_after_seconds, request_json, to_epoch_seconds
+from health_sync.util import _oauth_result_from_paste, _parse_retry_after_seconds, request_json, to_epoch_seconds
 
 
 class _FakeResponse:
@@ -62,6 +62,33 @@ class EpochParsingTests(unittest.TestCase):
 
     def test_epoch_parsing_accepts_date(self) -> None:
         self.assertEqual(to_epoch_seconds("2026-02-10"), 1770681600)
+
+
+class OAuthPasteParsingTests(unittest.TestCase):
+    def test_parses_full_callback_url(self) -> None:
+        parsed = _oauth_result_from_paste("http://127.0.0.1:8486/callback?code=abc123&state=s1")
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.code, "abc123")
+        self.assertEqual(parsed.state, "s1")
+        self.assertIsNone(parsed.error)
+
+    def test_parses_query_string_shape(self) -> None:
+        parsed = _oauth_result_from_paste("?code=xyz789&state=s2")
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.code, "xyz789")
+        self.assertEqual(parsed.state, "s2")
+
+    def test_parses_raw_code_fallback(self) -> None:
+        parsed = _oauth_result_from_paste("plain-code-token")
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.code, "plain-code-token")
+        self.assertIsNone(parsed.state)
+
+    def test_rejects_unstructured_text(self) -> None:
+        self.assertIsNone(_oauth_result_from_paste("this is not oauth input"))
 
 
 class RequestJsonTests(unittest.TestCase):

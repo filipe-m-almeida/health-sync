@@ -10,7 +10,7 @@ import requests
 
 from health_sync.config import AppConfig, Config, EightSleepConfig, LoadedConfig
 from health_sync.db import HealthSyncDb
-from health_sync.providers.eightsleep import _eightsleep_refresh_if_needed, eightsleep_sync
+from health_sync.providers.eightsleep import _eightsleep_refresh_if_needed, eightsleep_auth, eightsleep_sync
 
 
 class EightSleepProviderTests(unittest.TestCase):
@@ -64,6 +64,21 @@ class EightSleepProviderTests(unittest.TestCase):
                 self.assertEqual(access, "cached-token")
                 mock_request.assert_not_called()
 
+    def test_auth_stores_static_access_token(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = str(Path(td) / "health.sqlite")
+            cfg = self._loaded_cfg(db_path, access_token="cfg-static-token")
+
+            with HealthSyncDb(db_path) as db:
+                db.init()
+                eightsleep_auth(db, cfg)
+                tok = db.get_oauth_token("eightsleep")
+
+            self.assertIsNotNone(tok)
+            assert tok is not None
+            self.assertEqual(tok["access_token"], "cfg-static-token")
+            self.assertEqual(tok["extra"]["method"], "static_access_token")
+
     def test_refresh_requests_and_persists_new_token(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             db_path = str(Path(td) / "health.sqlite")
@@ -89,6 +104,27 @@ class EightSleepProviderTests(unittest.TestCase):
                 self.assertEqual(tok["access_token"], "new-token")
                 self.assertIsNotNone(tok["expires_at"])
                 self.assertEqual(tok["extra"]["tenant"], "demo")
+
+    def test_auth_requests_and_persists_new_token(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = str(Path(td) / "health.sqlite")
+            cfg = self._loaded_cfg(db_path)
+
+            with HealthSyncDb(db_path) as db:
+                db.init()
+                with patch(
+                    "health_sync.providers.eightsleep.request_json",
+                    return_value={"access_token": "auth-token", "expires_in": 7200, "tenant": "demo"},
+                ) as mock_request:
+                    eightsleep_auth(db, cfg)
+
+                self.assertEqual(mock_request.call_count, 1)
+                tok = db.get_oauth_token("eightsleep")
+
+            self.assertIsNotNone(tok)
+            assert tok is not None
+            self.assertEqual(tok["access_token"], "auth-token")
+            self.assertEqual(tok["extra"]["tenant"], "demo")
 
     def test_sync_writes_users_devices_and_trends(self) -> None:
         with tempfile.TemporaryDirectory() as td:
