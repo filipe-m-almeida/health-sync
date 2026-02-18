@@ -70,7 +70,7 @@ class SyncResilienceTests(unittest.TestCase):
             ),
         )
 
-    def test_cmd_sync_continues_when_one_provider_fails(self) -> None:
+    def test_cmd_sync_continues_when_one_provider_fails_and_returns_nonzero(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             db_path = str(Path(td) / "health.sqlite")
             cfg = self._loaded_cfg(db_path)
@@ -101,7 +101,7 @@ class SyncResilienceTests(unittest.TestCase):
             ):
                 rc = cmd_sync(args, cfg)
 
-            self.assertEqual(rc, 0)
+            self.assertEqual(rc, 1)
             self.assertEqual(calls, ["oura", "withings", "hevy"])
             err = stderr.getvalue()
             self.assertIn("WARNING: withings sync failed: boom", err)

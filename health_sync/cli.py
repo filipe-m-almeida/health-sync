@@ -133,9 +133,9 @@ def cmd_sync(args: argparse.Namespace, cfg: LoadedConfig) -> int:
                 file=sys.stderr,
             )
 
-        # Keep partial syncs successful (useful for cron/systemd), but fail if everything failed.
-        if successes == 0:
-            print("All selected providers failed.", file=sys.stderr)
+        if failures:
+            if successes == 0:
+                print("All selected providers failed.", file=sys.stderr)
             return 1
 
     return 0

@@ -4,8 +4,33 @@ import unittest
 import warnings
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
+from unittest.mock import Mock, call, patch
 
-from health_sync.util import _parse_retry_after_seconds, to_epoch_seconds
+import requests
+
+from health_sync.util import _parse_retry_after_seconds, request_json, to_epoch_seconds
+
+
+class _FakeResponse:
+    def __init__(
+        self,
+        status_code: int,
+        *,
+        headers: dict[str, str] | None = None,
+        text: str = "",
+        json_body=None,  # noqa: ANN001
+        json_error: Exception | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.text = text
+        self._json_body = {} if json_body is None else json_body
+        self._json_error = json_error
+
+    def json(self):  # noqa: ANN201
+        if self._json_error is not None:
+            raise self._json_error
+        return self._json_body
 
 
 class RetryAfterParsingTests(unittest.TestCase):
@@ -37,6 +62,89 @@ class EpochParsingTests(unittest.TestCase):
 
     def test_epoch_parsing_accepts_date(self) -> None:
         self.assertEqual(to_epoch_seconds("2026-02-10"), 1770681600)
+
+
+class RequestJsonTests(unittest.TestCase):
+    def test_retries_429_with_retry_after_header(self) -> None:
+        sess = Mock(spec=requests.Session)
+        sess.request.side_effect = [
+            _FakeResponse(429, headers={"Retry-After": "3"}),
+            _FakeResponse(200, json_body={"ok": True}),
+        ]
+
+        with patch("health_sync.util.time.sleep") as sleep:
+            out = request_json(sess, "GET", "https://example.test/endpoint")
+
+        self.assertEqual(out, {"ok": True})
+        self.assertEqual(sess.request.call_count, 2)
+        sleep.assert_called_once_with(3)
+
+    def test_retries_5xx_with_exponential_backoff(self) -> None:
+        sess = Mock(spec=requests.Session)
+        sess.request.side_effect = [
+            _FakeResponse(500),
+            _FakeResponse(502),
+            _FakeResponse(200, json_body={"ok": True}),
+        ]
+
+        with patch("health_sync.util.time.sleep") as sleep:
+            out = request_json(sess, "GET", "https://example.test/endpoint")
+
+        self.assertEqual(out, {"ok": True})
+        self.assertEqual(sess.request.call_count, 3)
+        sleep.assert_has_calls([call(1), call(2)])
+
+    def test_4xx_includes_trace_id_and_error_details(self) -> None:
+        sess = Mock(spec=requests.Session)
+        sess.request.return_value = _FakeResponse(
+            403,
+            headers={"x-trace-id": "trace-1"},
+            json_body={"error": "invalid_scope", "error_description": "revoked"},
+        )
+
+        with patch("health_sync.util.time.sleep") as sleep:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"HTTP 403 .*trace_id=trace-1.*error=invalid_scope.*error_description=revoked",
+            ):
+                request_json(sess, "GET", "https://example.test/endpoint")
+
+        self.assertEqual(sess.request.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_4xx_falls_back_to_response_text_when_json_is_invalid(self) -> None:
+        sess = Mock(spec=requests.Session)
+        sess.request.return_value = _FakeResponse(
+            400,
+            text="bad request body",
+            json_error=ValueError("invalid-json"),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, r"HTTP 400 .*bad request body"):
+            request_json(sess, "GET", "https://example.test/endpoint")
+
+        self.assertEqual(sess.request.call_count, 1)
+
+    def test_raises_after_max_retries_on_network_errors(self) -> None:
+        sess = Mock(spec=requests.Session)
+        sess.request.side_effect = [requests.ConnectionError("net down")] * 3
+
+        with patch("health_sync.util.time.sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, r"HTTP request failed after 3 attempts") as ctx:
+                request_json(sess, "GET", "https://example.test/endpoint", max_retries=3)
+
+        self.assertIsInstance(ctx.exception.__cause__, requests.ConnectionError)
+        self.assertEqual(sess.request.call_count, 3)
+        sleep.assert_has_calls([call(1), call(2), call(4)])
+
+    def test_raises_when_success_response_is_not_json(self) -> None:
+        sess = Mock(spec=requests.Session)
+        sess.request.return_value = _FakeResponse(200, json_error=ValueError("invalid-json"))
+
+        with self.assertRaisesRegex(RuntimeError, r"Failed to parse JSON response for GET https://example.test/endpoint"):
+            request_json(sess, "GET", "https://example.test/endpoint")
+
+        self.assertEqual(sess.request.call_count, 1)
 
 
 if __name__ == "__main__":

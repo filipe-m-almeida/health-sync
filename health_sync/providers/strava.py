@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import secrets
-import time
 from datetime import UTC, datetime
 from urllib.parse import quote, urlencode, urlparse
 
@@ -264,7 +263,7 @@ def strava_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
         after_epoch = int(parse_yyyy_mm_dd(cfg.config.strava.start_date).timestamp())
 
     page = 1
-    max_start_epoch = existing_wm or 0
+    max_start_epoch: int | None = existing_wm
 
     with db.sync_run(provider=STRAVA_PROVIDER, resource="activities") as run:
         with db.transaction():
@@ -293,7 +292,7 @@ def strava_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
                     end_time = None
                     source_updated_at = item.get("updated_at") or start_time
                     start_epoch = to_epoch_seconds(start_time)
-                    if start_epoch is not None and start_epoch > max_start_epoch:
+                    if start_epoch is not None and (max_start_epoch is None or start_epoch > max_start_epoch):
                         max_start_epoch = start_epoch
 
                     op = db.upsert_record(
@@ -311,8 +310,11 @@ def strava_sync(db: HealthSyncDb, cfg: LoadedConfig) -> None:
                     break
                 page += 1
 
-            if max_start_epoch <= 0:
-                max_start_epoch = existing_wm or int(time.time())
+            if max_start_epoch is None:
+                # No prior watermark and no activities returned. Keep the initial
+                # backfill anchor rather than advancing to "now", which can skip
+                # late-imported historical activities.
+                max_start_epoch = after_epoch
             db.set_sync_state(provider=STRAVA_PROVIDER, resource="activities", watermark=max_start_epoch)
 
     print(
