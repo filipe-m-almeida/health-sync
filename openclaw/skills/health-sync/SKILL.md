@@ -18,6 +18,14 @@ Use this skill when the user needs help with `health-sync` setup, provider onboa
 
 Use this workflow for first-time setup in OpenClaw.
 
+### 0) Install `health-sync` first (required)
+
+Before any init/auth/sync steps, install from GitHub:
+
+- `pip install https://github.com/filipe-m-almeida/health-sync.git`
+
+If `health-sync` command is still missing after install, stop and fix the environment before continuing.
+
 ### 1) Resolve workspace paths and CLI command
 
 - Treat the agent's current working directory (`pwd`) as the active workspace root.
@@ -28,8 +36,8 @@ Use this workflow for first-time setup in OpenClaw.
 
 Command preference:
 
-1. Use `health-sync` if it exists in `PATH`.
-2. Otherwise use `uv run health-sync` from the repo root.
+1. Use `health-sync` from `PATH` (installed in step 0).
+2. Use `uv run health-sync` only if explicitly working from a local checkout.
 
 ### 2) Initialize workspace files
 

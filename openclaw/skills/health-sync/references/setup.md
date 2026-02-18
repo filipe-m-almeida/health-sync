@@ -2,6 +2,22 @@
 
 Use this file when the user asks to set up `health-sync` in OpenClaw.
 
+## 0) Install `health-sync` first
+
+Run this before init/auth/sync:
+
+```bash
+pip install https://github.com/filipe-m-almeida/health-sync.git
+```
+
+Verify:
+
+```bash
+command -v health-sync
+```
+
+If `health-sync` is not found, stop and fix the Python environment first.
+
 ## 1) Paths and command wrapper
 
 ```bash
@@ -13,6 +29,7 @@ DB="$HEALTH_DIR/health.sqlite"
 if command -v health-sync >/dev/null 2>&1; then
   HS_CMD=(health-sync)
 else
+  # Fallback only when intentionally running from a local repo checkout.
   HS_CMD=(uv run health-sync)
 fi
 ```
