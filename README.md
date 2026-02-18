@@ -12,7 +12,7 @@ It is designed as a personal data cache: first sync backfills history, then futu
 
 ## Supported Providers
 
-- Oura (Cloud API v2, PAT or OAuth2)
+- Oura (Cloud API v2, OAuth2)
 - Withings (Advanced Health Data API, OAuth2)
 - Hevy (public API, API key, Pro account required)
 - Strava (OAuth2 or static access token)

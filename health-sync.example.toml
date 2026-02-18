@@ -16,10 +16,7 @@
 # Set to true to sync this provider.
 enabled = false
 
-# Option A: Personal Access Token (PAT)
-# access_token = "..."
-#
-# Option B: OAuth2 (Authorization Code)
+# OAuth2 (Authorization Code)
 # client_id = "..."
 # client_secret = "..."
 # redirect_uri = "http://localhost:8484/callback"

@@ -20,9 +20,6 @@ class AppConfig:
 class OuraConfig:
     enabled: bool = False
 
-    # If set, this is treated as a Personal Access Token (PAT).
-    access_token: str | None = None
-
     # OAuth2 (Authorization Code + refresh token)
     client_id: str | None = None
     client_secret: str | None = None
@@ -239,7 +236,6 @@ def load_config(path: str | Path | None = None) -> LoadedConfig:
     )
     oura = OuraConfig(
         enabled=oura_enabled if oura_enabled is not None else OuraConfig().enabled,
-        access_token=_get_str(raw_oura, "access_token"),
         client_id=_get_str(raw_oura, "client_id"),
         client_secret=_get_str(raw_oura, "client_secret"),
         redirect_uri=_get_str(raw_oura, "redirect_uri") or OuraConfig().redirect_uri,

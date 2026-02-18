@@ -136,6 +136,24 @@ class OuraAuthRefreshTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "Missing Oura credentials"):
                     _oura_refresh_if_needed(db, cfg, requests.Session())
 
+    def test_legacy_token_without_refresh_token_requires_reauth(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = str(Path(td) / "health.sqlite")
+            cfg = self._loaded_cfg(db_path)
+            with HealthSyncDb(db_path) as db:
+                db.init()
+                db.set_oauth_token(
+                    provider="oura",
+                    access_token="legacy-token",
+                    refresh_token=None,
+                    token_type="Bearer",
+                    scope=None,
+                    expires_at=None,
+                    extra={"method": "legacy"},
+                )
+                with self.assertRaisesRegex(RuntimeError, "missing `refresh_token`"):
+                    _oura_refresh_if_needed(db, cfg, requests.Session())
+
 
 if __name__ == "__main__":
     unittest.main()

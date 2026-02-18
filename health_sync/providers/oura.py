@@ -51,21 +51,6 @@ def _oura_redirect(cfg: LoadedConfig) -> tuple[str, int, str]:
 
 
 def oura_auth(db: HealthSyncDb, cfg: LoadedConfig, *, listen_host: str = "127.0.0.1", listen_port: int = 0) -> None:
-    # Fast path: PAT from config.
-    pat = cfg.config.oura.access_token
-    if pat:
-        db.set_oauth_token(
-            provider=OURA_PROVIDER,
-            access_token=pat,
-            refresh_token=None,
-            token_type="Bearer",
-            scope=None,
-            expires_at=None,
-            extra={"method": "pat"},
-        )
-        print("Stored Oura personal access token in DB.")
-        return
-
     client_id = require_str(cfg, cfg.config.oura.client_id, key="oura.client_id")
     client_secret = require_str(cfg, cfg.config.oura.client_secret, key="oura.client_secret")
     redirect_uri, redirect_port, callback_path = _oura_redirect(cfg)
@@ -126,28 +111,25 @@ def oura_auth(db: HealthSyncDb, cfg: LoadedConfig, *, listen_host: str = "127.0.
 
 
 def _oura_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: requests.Session) -> str:
-    # PAT via config: use directly.
-    pat = cfg.config.oura.access_token
-    if pat:
-        return pat
-
     tok = db.get_oauth_token(OURA_PROVIDER)
     if not tok:
         raise RuntimeError(
-            "Missing Oura credentials. Set `oura.access_token` in your config file "
-            f"({cfg.path}) or run `health-sync auth oura`."
+            "Missing Oura credentials. Run `health-sync auth oura` "
+            f"(config: {cfg.path})."
         )
 
     access_token = tok["access_token"]
     refresh_token = tok.get("refresh_token")
     expires_at = tok.get("expires_at")
 
-    # PAT stored in DB: no refresh.
-    if not refresh_token or not expires_at:
-        return access_token
+    if not refresh_token:
+        raise RuntimeError(
+            "Stored Oura token is missing `refresh_token`. Oura now requires OAuth2 tokens with refresh support; "
+            "run `health-sync auth oura` again."
+        )
 
     try:
-        exp = iso_to_dt(expires_at)
+        exp = iso_to_dt(expires_at) if expires_at else datetime.now(UTC) - timedelta(days=1)
     except Exception:  # noqa: BLE001
         exp = datetime.now(UTC) - timedelta(days=1)
 

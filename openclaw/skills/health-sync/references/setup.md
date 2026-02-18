@@ -164,9 +164,7 @@ If auth fails:
 
 Config block: `[oura]`
 
-- Supported auth styles:
-  - OAuth (`client_id` + `client_secret`)
-  - PAT (`access_token`)
+- OAuth required (`client_id` + `client_secret`)
 - OAuth redirect default: `http://localhost:8484/callback`
 
 ### Withings
