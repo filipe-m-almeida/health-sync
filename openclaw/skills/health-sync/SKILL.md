@@ -23,8 +23,9 @@ Use this workflow for first-time setup in OpenClaw.
 Before any init/auth/sync steps, install from GitHub:
 
 - `pip install https://github.com/filipe-m-almeida/health-sync.git`
+- `python -m health_sync --help`
 
-If `health-sync` command is still missing after install, stop and fix the environment before continuing.
+If `python -m health_sync` fails after install, stop and fix the Python environment before continuing.
 
 ### 1) Resolve workspace paths and CLI command
 
@@ -36,15 +37,15 @@ If `health-sync` command is still missing after install, stop and fix the enviro
 
 Command preference:
 
-1. Use `health-sync` from `PATH` (installed in step 0).
-2. Use `uv run health-sync` only if explicitly working from a local checkout.
+1. Use `python -m health_sync`.
+2. Use `uv run python -m health_sync` only if explicitly working from a local checkout.
 
 ### 2) Initialize workspace files
 
 Perform these steps in order:
 
 1. Create the health workspace directory if missing.
-2. Run `health-sync init` with explicit config and DB path.
+2. Run `python -m health_sync init` with explicit config and DB path.
 3. Confirm `<health-dir>/health-sync.toml` and `<health-dir>/health.sqlite` now exist.
 
 Reference commands and file-edit checklist are in `references/setup.md`.
@@ -76,7 +77,7 @@ For each OAuth provider the user enables:
 1. Use `references/setup.md` to guide user with official provider URLs and exact click flow to create/find OAuth credentials.
 2. Save `client_id`, `client_secret`, and redirect URI in config.
 3. Start auth command in an interactive terminal session:
-   - `health-sync --config <config> --db <db> auth <provider>`
+   - `python -m health_sync --config <config> --db <db> auth <provider>`
 4. CLI prints an auth URL. Ask user to open/click it and complete consent.
 5. Ask user to paste the final callback URL (or just `code`) back in chat.
 6. Send pasted callback URL/code to the running auth command stdin.
@@ -93,7 +94,7 @@ Eight Sleep uses password-grant auth flow. Always prefill these client credentia
 
 Then collect `email` + `password` (or `access_token`) and run:
 
-- `health-sync --config <config> --db <db> auth eightsleep`
+- `python -m health_sync --config <config> --db <db> auth eightsleep`
 
 No provider developer-console app creation is required for Eight Sleep in this flow.
 
@@ -101,9 +102,9 @@ No provider developer-console app creation is required for Eight Sleep in this f
 
 After provider onboarding:
 
-1. Run `health-sync --config <config> --db <db> providers`.
-2. Run `health-sync --config <config> --db <db> status`.
-3. Optionally run `health-sync --config <config> --db <db> sync --providers <enabled providers...>`.
+1. Run `python -m health_sync --config <config> --db <db> providers`.
+2. Run `python -m health_sync --config <config> --db <db> status`.
+3. Optionally run `python -m health_sync --config <config> --db <db> sync --providers <enabled providers...>`.
 4. Report any provider errors with concrete remediation steps (missing credentials, disabled provider, callback mismatch).
 
 Run sync only on user request (or periodic heartbeat workflows).

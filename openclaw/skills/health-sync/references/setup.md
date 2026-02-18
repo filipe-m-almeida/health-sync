@@ -13,10 +13,10 @@ pip install https://github.com/filipe-m-almeida/health-sync.git
 Verify:
 
 ```bash
-command -v health-sync
+python -m health_sync --help
 ```
 
-If `health-sync` is not found, stop and fix the Python environment first.
+If `python -m health_sync` fails, stop and fix the Python environment first.
 
 ## 1) Paths and command wrapper
 
@@ -26,12 +26,11 @@ HEALTH_DIR="$WORKSPACE_ROOT/health"
 CONFIG="$HEALTH_DIR/health-sync.toml"
 DB="$HEALTH_DIR/health.sqlite"
 
-if command -v health-sync >/dev/null 2>&1; then
-  HS_CMD=(health-sync)
-else
-  # Fallback only when intentionally running from a local repo checkout.
-  HS_CMD=(uv run health-sync)
-fi
+# Primary command.
+HS_CMD=(python -m health_sync)
+
+# Fallback only when intentionally running from a local repo checkout.
+# HS_CMD=(uv run python -m health_sync)
 ```
 
 ## 2) Bootstrap config + DB
