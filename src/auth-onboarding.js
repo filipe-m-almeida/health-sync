@@ -1,20 +1,40 @@
 import {
   Container,
   Input,
+  Key,
+  matchesKey,
   ProcessTerminal,
   SelectList,
   Spacer,
   TUI,
   Text,
 } from '@mariozechner/pi-tui';
+import chalk, { Chalk } from 'chalk';
 import { requestJson } from './util.js';
 
+const hasForceColor = typeof process.env.FORCE_COLOR === 'string'
+  && process.env.FORCE_COLOR.trim() !== ''
+  && process.env.FORCE_COLOR.trim() !== '0';
+const baseChalk = process.env.NO_COLOR && !hasForceColor ? new Chalk({ level: 0 }) : chalk;
+const color = (hex) => baseChalk.hex(hex);
+const colors = {
+  text: color('#E8E3D5'),
+  muted: color('#7B7F87'),
+  accent: color('#F6C453'),
+  accentSoft: color('#F2A65A'),
+  success: color('#7DD3A5'),
+  warn: color('#F2A65A'),
+  error: color('#F97066'),
+  control: color('#8CC8FF'),
+  heading: (value) => baseChalk.bold(color('#F6C453')(value)),
+};
+
 const SELECT_THEME = {
-  selectedPrefix: (text) => text,
-  selectedText: (text) => text,
-  description: (text) => text,
-  scrollInfo: (text) => text,
-  noMatch: (text) => text,
+  selectedPrefix: (text) => colors.accent(text),
+  selectedText: (text) => baseChalk.bold(colors.accent(text)),
+  description: (text) => colors.muted(text),
+  scrollInfo: (text) => colors.muted(text),
+  noMatch: (text) => colors.muted(text),
 };
 
 const PROVIDER_NAMES = {
@@ -47,6 +67,14 @@ function defaultListDescription(provider) {
 
 function providerName(providerId) {
   return PROVIDER_NAMES[providerId] || providerId;
+}
+
+function providerLabel(providerId) {
+  const label = providerName(providerId);
+  if (baseChalk.level <= 0) {
+    return `${label} (${providerId})`;
+  }
+  return `${colors.accent(label)} ${colors.muted(`(${providerId})`)}`;
 }
 
 function isBuiltInProvider(providerId) {
@@ -296,13 +324,14 @@ function setupGuide(providerId, cfg) {
       title: 'Eight Sleep onboarding',
       lines: [
         '- No OAuth app registration is required for this provider.',
-        '- Use either account credentials (email/password) or an access token.',
+        '- Sign in with your Eight Sleep account credentials (username/email + password).',
         `- Auth URL used by health-sync: ${cfg?.auth_url || 'https://auth-api.8slp.net/v1/tokens'}`,
         `- API base used by health-sync: ${eightsleepApiBase(cfg)}`,
         '- Continue and health-sync will exchange credentials and save tokens to .health-sync.creds.',
       ],
       fields: [
-        { key: 'auth_mode', label: 'Auth mode', required: true, kind: 'choice' },
+        { key: 'email', label: 'Username or Email', required: true },
+        { key: 'password', label: 'Password', required: true, secret: true },
       ],
     };
   }
@@ -356,11 +385,30 @@ async function runTuiPrompt(setupFn) {
 }
 
 function createScreenText(title, lines = []) {
-  const out = [title, ''];
+  const titleLine = baseChalk.level > 0 ? colors.heading(title) : title;
+  const divider = baseChalk.level > 0
+    ? colors.muted('------------------------------------------------------------')
+    : '------------------------------------------------------------';
+  const styledLines = lines.map((line) => {
+    const value = String(line);
+    if (baseChalk.level <= 0) {
+      return value;
+    }
+    if (value.startsWith('- ')) {
+      return `${colors.accent('-')} ${colors.text(value.slice(2))}`;
+    }
+    return colors.text(value);
+  });
+
+  const out = [titleLine, divider, ''];
   if (lines.length) {
-    out.push(...lines, '');
+    out.push(...styledLines, '');
   }
-  out.push('Use Up/Down to move, Enter to select, Esc to cancel.');
+  out.push(
+    baseChalk.level > 0
+      ? colors.control('Use Up/Down to move, Enter to continue, Esc to cancel.')
+      : 'Use Up/Down to move, Enter to continue, Esc to cancel.',
+  );
   return out.join('\n');
 }
 
@@ -579,48 +627,13 @@ async function promptStravaConfig(cfg) {
 }
 
 async function promptEightSleepConfig(cfg) {
-  const mode = await promptSelect({
-    title: 'Eight Sleep setup mode',
-    lines: [
-      '- Email/password mode uses your Eight Sleep account login.',
-      '- Access token mode stores [eightsleep].access_token directly.',
-    ],
-    items: [
-      { value: 'password', label: 'Email + password (recommended)' },
-      { value: 'token', label: 'Static access token' },
-    ],
-  });
-
-  if (!mode) {
-    return { ok: false, updates: {} };
-  }
-
-  if (mode === 'token') {
-    const tokenField = await promptTextField('eightsleep', cfg, {
-      key: 'access_token',
-      label: 'Access Token',
-      required: true,
-      secret: true,
-    });
-    if (!tokenField.ok) {
-      return { ok: false, updates: {} };
-    }
-
-    return {
-      ok: true,
-      updates: {
-        access_token: tokenField.value,
-      },
-    };
-  }
-
   const updates = {
     access_token: null,
   };
 
   for (const field of [
-    { key: 'email', label: 'Account Email', required: true },
-    { key: 'password', label: 'Account Password', required: true, secret: true },
+    { key: 'email', label: 'Username or Email', required: true },
+    { key: 'password', label: 'Password', required: true, secret: true },
   ]) {
     const value = await promptTextField('eightsleep', cfg, field);
     if (!value.ok) {
@@ -672,60 +685,96 @@ export async function promptAuthProviderChecklist(providerRows) {
     return [];
   }
 
-  const selected = new Set();
+  return await runTuiPrompt((tui, finish) => {
+    const selected = new Set();
+    let warningLine = '';
 
-  while (true) {
-    const items = [
-      ...providerRows.map((provider) => {
-        const selectable = selectableIds.has(provider.id);
-        const checked = selectable
-          ? (selected.has(provider.id) ? '[x]' : '[ ]')
-          : '[-]';
-        return {
-          value: provider.id,
-          label: `${checked} ${providerName(provider.id)} (${provider.id})`,
-          description: selectable
-            ? defaultListDescription(provider)
-            : `${defaultListDescription(provider)} (auth not supported)`,
-        };
-      }),
-      {
-        value: '__continue__',
-        label: `Continue (${selected.size} selected)`,
-        description: selected.size ? 'Run guided setup for selected providers' : 'Select at least one provider first',
-      },
-    ];
-
-    const choice = await promptSelect({
-      title: 'Health Sync setup: choose providers',
-      lines: [
-        '- Select one or more providers for guided setup.',
-        '- You can toggle providers multiple times before continuing.',
-      ],
-      items,
+    const heading = new Text('', 0, 0);
+    const listItems = providerRows.map((provider) => {
+      const selectable = selectableIds.has(provider.id);
+      return {
+        value: provider.id,
+        label: '',
+        description: selectable
+          ? defaultListDescription(provider)
+          : `${defaultListDescription(provider)} (auth not supported)`,
+      };
     });
+    const list = new SelectList(listItems, Math.min(12, Math.max(3, listItems.length)), SELECT_THEME);
 
-    if (!choice) {
-      return [];
-    }
-
-    if (choice === '__continue__') {
-      if (selected.size) {
-        return Array.from(selected);
+    const renderHeading = () => {
+      const lines = [
+        '- Select one or more providers for guided setup.',
+        '- Space toggles selection for the highlighted provider.',
+        '- Enter continues to the next screen.',
+      ];
+      if (warningLine) {
+        lines.push('', warningLine);
       }
-      continue;
-    }
+      heading.setText(createScreenText('Health Sync setup: choose providers', lines));
+    };
 
-    if (!selectableIds.has(choice)) {
-      continue;
-    }
+    const refreshList = () => {
+      for (const item of listItems) {
+        const selectable = selectableIds.has(item.value);
+        const checked = selectable
+          ? (selected.has(item.value) ? '[x]' : '[ ]')
+          : '[-]';
+        item.label = `${checked} ${providerLabel(item.value)}`;
+      }
+      list.invalidate();
+      tui.requestRender();
+    };
 
-    if (selected.has(choice)) {
-      selected.delete(choice);
-    } else {
-      selected.add(choice);
-    }
-  }
+    renderHeading();
+    refreshList();
+
+    const root = new Container();
+    root.addChild(heading);
+    root.addChild(new Spacer(1));
+    root.addChild(list);
+    tui.addChild(root);
+    tui.setFocus(list);
+
+    const removeListener = tui.addInputListener((data) => {
+      if (matchesKey(data, Key.space)) {
+        const current = list.getSelectedItem();
+        if (current && selectableIds.has(current.value)) {
+          if (selected.has(current.value)) {
+            selected.delete(current.value);
+          } else {
+            selected.add(current.value);
+          }
+          warningLine = '';
+          renderHeading();
+          refreshList();
+        }
+        return { consume: true };
+      }
+
+      if (matchesKey(data, Key.enter)) {
+        if (!selected.size) {
+          warningLine = baseChalk.level > 0
+            ? colors.warn('Select at least one provider to continue.')
+            : 'Select at least one provider to continue.';
+          renderHeading();
+          tui.requestRender();
+          return { consume: true };
+        }
+        removeListener();
+        finish(Array.from(selected));
+        return { consume: true };
+      }
+
+      if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl('c'))) {
+        removeListener();
+        finish([]);
+        return { consume: true };
+      }
+
+      return undefined;
+    });
+  });
 }
 
 export async function runProviderPreAuthWizard(providerId, cfg, db, options = {}) {

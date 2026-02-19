@@ -495,7 +495,7 @@ async function cmdAuth(parsed) {
       listenHost: parsed.options.listenHost,
       listenPort: parsed.options.listenPort,
       showGuide: false,
-      showConfigPrompts: false,
+      showConfigPrompts: parsed.options.provider === 'eightsleep',
       askRedoIfWorking: hasInteractiveAuthUi(),
     });
 
