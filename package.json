@@ -15,7 +15,10 @@
   "scripts": {
     "start": "node ./bin/health-sync.js",
     "check": "node --check ./bin/health-sync.js && node --check ./src/cli.js",
-    "test": "node --test ./tests/*.test.js"
+    "test": "node --test ./tests/*.test.js",
+    "release:npm": "npm publish",
+    "release:clawhub": "clawhub publish clawhub/skills/health-sync --slug health-sync --name health-sync --version \"$npm_package_version\" --changelog \"Release v$npm_package_version\"",
+    "release": "npm run release:npm && npm run release:clawhub"
   },
   "dependencies": {
     "@iarna/toml": "^2.2.5",

@@ -1,4 +1,6 @@
+import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   initConfigFile,
   loadConfig,
@@ -10,10 +12,30 @@ import { loadProviders } from './plugins/loader.js';
 import { setRequestJsonVerbose } from './util.js';
 
 const DEFAULT_CONFIG_PATH = 'health-sync.toml';
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PACKAGE_JSON_PATH = path.resolve(MODULE_DIR, '../package.json');
+
+let cachedVersion = null;
+
+function cliVersion() {
+  if (cachedVersion !== null) {
+    return cachedVersion;
+  }
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, 'utf8'));
+    cachedVersion = raw?.version ? String(raw.version) : '0.0.0';
+  } catch {
+    cachedVersion = '0.0.0';
+  }
+
+  return cachedVersion;
+}
 
 function parseGlobalOptions(argv) {
   let configPath = DEFAULT_CONFIG_PATH;
   let dbPath = null;
+  let showVersion = false;
   const remaining = [];
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -42,10 +64,14 @@ function parseGlobalOptions(argv) {
       dbPath = arg.slice('--db='.length);
       continue;
     }
+    if (arg === '--version' || arg === '-V') {
+      showVersion = true;
+      continue;
+    }
     remaining.push(arg);
   }
 
-  return { configPath, dbPath, remaining };
+  return { configPath, dbPath, showVersion, remaining };
 }
 
 function parseAuthArgs(args) {
@@ -160,6 +186,18 @@ function parseArgs(argv) {
   const global = parseGlobalOptions(argv);
   const [command, ...rest] = global.remaining;
 
+  if (global.showVersion) {
+    if (command) {
+      throw new Error('--version cannot be combined with a command');
+    }
+    return {
+      command: 'version',
+      configPath: global.configPath,
+      dbPath: global.dbPath,
+      options: {},
+    };
+  }
+
   if (!command) {
     return {
       command: null,
@@ -223,6 +261,7 @@ function enableHint(providerId) {
 function usage() {
   return [
     'Usage: health-sync [--config path] [--db path] <command> [options]',
+    '       health-sync --version',
     '',
     'Commands:',
     '  init                          Initialize config file and database',
@@ -483,6 +522,11 @@ export async function main(argv = process.argv.slice(2)) {
     if (!parsed.command) {
       console.log(usage());
       return 1;
+    }
+
+    if (parsed.command === 'version') {
+      console.log(cliVersion());
+      return 0;
     }
 
     if (parsed.command === 'init') {

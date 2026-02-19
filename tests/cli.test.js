@@ -54,6 +54,16 @@ test('parseArgs has providers and init subcommands', () => {
   assert.equal(parseArgs(['init']).command, 'init');
 });
 
+test('parseArgs supports --version and rejects combining it with a command', () => {
+  const parsed = parseArgs(['--version']);
+  assert.equal(parsed.command, 'version');
+
+  assert.throws(
+    () => parseArgs(['--version', 'status']),
+    /--version cannot be combined with a command/,
+  );
+});
+
 test('parseArgs sync accepts verbose flags', () => {
   const longFlag = parseArgs(['sync', '--verbose', '--providers', 'oura']);
   assert.equal(longFlag.options.verbose, true);
@@ -62,6 +72,22 @@ test('parseArgs sync accepts verbose flags', () => {
   const shortFlag = parseArgs(['sync', '-v', '--providers=hevy,strava']);
   assert.equal(shortFlag.options.verbose, true);
   assert.deepEqual(shortFlag.options.providers, ['hevy', 'strava']);
+});
+
+test('main --version prints current package version', async () => {
+  const logs = [];
+  const originalLog = console.log;
+  console.log = (...parts) => logs.push(parts.map((part) => String(part)).join(' '));
+  try {
+    const rc = await main(['--version']);
+    assert.equal(rc, 0);
+  } finally {
+    console.log = originalLog;
+  }
+
+  const packageJsonPath = path.join(process.cwd(), 'package.json');
+  const expectedVersion = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')).version;
+  assert.deepEqual(logs, [expectedVersion]);
 });
 
 test('parseArgs rejects flag-like auth provider id', () => {
