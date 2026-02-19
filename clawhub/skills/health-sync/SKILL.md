@@ -1,6 +1,6 @@
 ---
 name: health-sync
-description: Set up and operate health-sync in workspace/health-sync (install, init, provider auth, sync/status) and analyze the SQLite cache for Oura, Withings, Hevy, Strava, and Eight Sleep.
+description: Analyze your health across providers (Oura, Withings, Hevy, Strava, Eight Sleep).
 ---
 
 # Health Sync Setup + Analysis
