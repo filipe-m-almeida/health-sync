@@ -1,6 +1,6 @@
 # Health Sync Setup Reference
 
-Use this file when the user asks to set up `health-sync` in OpenClaw.
+Use this file when the user asks to set up `health-sync` in ClawHub.
 
 ## 0) Mandatory preflight (run first)
 
@@ -12,16 +12,13 @@ HEALTH_DIR="$WORKSPACE_ROOT/health"
 CONFIG="$HEALTH_DIR/health-sync.toml"
 DB="$HEALTH_DIR/health.sqlite"
 
-if command -v python >/dev/null 2>&1; then
-  PY_BIN="python"
-elif command -v python3 >/dev/null 2>&1; then
-  PY_BIN="python3"
-else
-  echo "Python is not installed or not on PATH."
+if ! command -v health-sync >/dev/null 2>&1; then
+  echo "health-sync CLI not found on PATH."
+  echo "Install it with: npm install -g health-sync"
   exit 1
 fi
 
-HS_CMD=("$PY_BIN" -m health_sync)
+HS_CMD=("health-sync")
 
 echo "workspace: $WORKSPACE_ROOT"
 echo "health dir: $HEALTH_DIR"
@@ -33,7 +30,7 @@ echo "db: $DB"
 
 Required checks:
 
-1. CLI is runnable (`python -m health_sync --help` or `python3 -m health_sync --help` exits 0).
+1. CLI is runnable (`health-sync --help` exits 0).
 2. Workspace path is resolved from current `pwd`.
 3. Expected setup paths are known (`$HEALTH_DIR`, `$CONFIG`, `$DB`).
 
@@ -41,14 +38,14 @@ If preflight fails, run install/bootstrap first and re-check.
 
 ## 1) Install/bootstrap fallback
 
-Install from GitHub:
+Install from npm:
 
 ```bash
-pip install https://github.com/filipe-m-almeida/health-sync.git
+npm install -g health-sync
 "${HS_CMD[@]}" --help
 ```
 
-If CLI still fails, stop and fix Python environment before provider auth.
+If CLI still fails, stop and fix Node/npm environment before provider auth.
 
 ## 2) Initialize config + DB
 

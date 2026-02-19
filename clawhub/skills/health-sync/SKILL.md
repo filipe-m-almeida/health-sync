@@ -20,7 +20,7 @@ description: Set up and operate health-sync in a dedicated health workspace (pre
 Do this before asking the user for any provider credentials:
 
 1. Verify CLI/runtime:
-   - `python -m health_sync --help` (or `python3 -m health_sync --help` when `python` alias is absent)
+   - `health-sync --help`
 2. Resolve workspace and expected paths from `pwd`:
    - `<workspace>/health/health-sync.toml`
    - `<workspace>/health/health.sqlite`
@@ -32,10 +32,10 @@ Use exact command snippets from `references/setup.md`.
 
 ### 1) Install/bootstrap only if preflight fails
 
-- Install from GitHub:
-  - `pip install https://github.com/filipe-m-almeida/health-sync.git`
+- Install from npm:
+  - `npm install -g health-sync`
 - Re-run preflight checks.
-- If `python -m health_sync` / `python3 -m health_sync` still fails, stop and fix Python environment first.
+- If `health-sync --help` still fails, stop and fix Node/npm environment first.
 
 ### 2) Initialize config + DB
 
