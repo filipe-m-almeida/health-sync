@@ -55,6 +55,12 @@ The wizard lets you:
 - enter credentials directly into `health-sync.toml`
 - run auth flows and save tokens in `.health-sync.creds`
 
+Remote onboarding (for bot/operator handoff) is also available:
+
+```bash
+health-sync init remote bootstrap
+```
+
 2. (Optional) re-run auth for a single provider later:
 
 ```bash
@@ -72,6 +78,57 @@ health-sync sync
 ```bash
 health-sync status
 ```
+
+## Remote Bootstrap Setup
+
+This mode is designed for cross-device onboarding where the user runs setup locally and sends an encrypted bundle back to an operator/bot over untrusted transport (for example, Telegram).
+
+### 1) Operator creates bootstrap token
+
+```bash
+health-sync init remote bootstrap --expires-in 24h
+```
+
+This command:
+- generates one bootstrap key/session
+- prints a bootstrap token to share with the user
+- stores private key material locally under `~/.health-sync/remote-bootstrap`
+
+### 2) User runs onboarding with the shared token
+
+```bash
+health-sync init remote run <bootstrap-token>
+```
+
+This command:
+- runs normal guided `init` onboarding
+- encrypts `health-sync.toml` + `.health-sync.creds` into an archive
+- prints the archive path to send back to the operator
+- purges local config/creds by default after archive creation
+
+Options:
+- `--output <path>`: choose archive output path
+- `--keep-local`: keep local config/creds instead of purging
+
+### 3) Operator imports encrypted archive
+
+```bash
+health-sync init remote finish <bootstrap-token-or-key-id> <archive-path>
+```
+
+This command:
+- decrypts archive using stored bootstrap private key
+- safely imports config/creds with timestamped backups
+- marks bootstrap session as consumed (one-time use)
+
+Options:
+- `--target-config <path>`
+- `--target-creds <path>`
+
+Compatibility aliases:
+- `health-sync init --remote-bootstrap`
+- `health-sync init --remote <token>`
+- `health-sync init --remote-bootstrap-finish <ref> <archive>`
 
 ## Basic Configuration
 
@@ -105,6 +162,9 @@ See `health-sync.example.toml` for all provider options.
 ## CLI Commands
 
 - `health-sync init`: create a scaffolded config (from `health-sync.example.toml`), create DB tables, and launch interactive provider setup when running in a TTY
+- `health-sync init remote bootstrap`: generate a remote bootstrap token/session
+- `health-sync init remote run <token>`: run onboarding and emit encrypted remote archive
+- `health-sync init remote finish <ref> <archive>`: decrypt and import remote archive
 - `health-sync init-db`: create DB tables only (legacy)
 - `health-sync auth <provider>`: run auth flow for one provider/plugin
 - `health-sync sync`: run sync for all enabled providers
@@ -133,6 +193,7 @@ The database keeps raw JSON payloads and sync metadata in generic tables:
 - `sync_state`: per-resource watermarks/cursors
 - `.health-sync.creds`: stored provider credentials and OAuth tokens
 - `sync_runs`: run history and per-sync counters
+- `~/.health-sync/remote-bootstrap`: private bootstrap sessions/keys for remote onboarding
 
 This schema is intentionally generic so upstream API changes are less likely to require migrations.
 

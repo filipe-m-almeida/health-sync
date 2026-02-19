@@ -12,6 +12,18 @@ import { PluginHelpers, providerEnabled } from './plugins/base.js';
 import { loadProviders } from './plugins/loader.js';
 import { setRequestJsonVerbose } from './util.js';
 import {
+  BOOTSTRAP_TOKEN_PREFIX,
+  bootstrapStoreDir,
+  buildRemotePayloadFromFiles,
+  createBootstrapSession,
+  defaultRemoteArchivePath,
+  encryptRemotePayload,
+  importRemoteArchive,
+  parseBootstrapToken,
+  parseDurationToSeconds,
+  writeRemoteArchiveFile,
+} from './remote-bootstrap.js';
+import {
   authProviderDisplayName,
   hasInteractiveAuthUi,
   isUserAbortError,
@@ -194,6 +206,179 @@ function parseProvidersArgs(args) {
   return out;
 }
 
+function parseInitRemoteBootstrapArgs(args) {
+  const out = {
+    mode: 'remote-bootstrap',
+    expiresInSeconds: parseDurationToSeconds(null),
+  };
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--expires-in') {
+      i += 1;
+      if (i >= args.length) {
+        throw new Error('--expires-in requires a value');
+      }
+      out.expiresInSeconds = parseDurationToSeconds(args[i]);
+      continue;
+    }
+    if (arg.startsWith('--expires-in=')) {
+      out.expiresInSeconds = parseDurationToSeconds(arg.slice('--expires-in='.length));
+      continue;
+    }
+    throw new Error(`Unknown init remote bootstrap option: ${arg}`);
+  }
+
+  return out;
+}
+
+function parseInitRemoteRunArgs(args) {
+  const out = {
+    mode: 'remote-run',
+    bootstrapToken: null,
+    outputPath: null,
+    purgeLocal: true,
+  };
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--output') {
+      i += 1;
+      if (i >= args.length) {
+        throw new Error('--output requires a value');
+      }
+      out.outputPath = args[i];
+      continue;
+    }
+    if (arg.startsWith('--output=')) {
+      out.outputPath = arg.slice('--output='.length);
+      continue;
+    }
+    if (arg === '--keep-local') {
+      out.purgeLocal = false;
+      continue;
+    }
+    if (arg === '--purge-local') {
+      out.purgeLocal = true;
+      continue;
+    }
+    if (arg.startsWith('--')) {
+      throw new Error(`Unknown init remote run option: ${arg}`);
+    }
+    if (!out.bootstrapToken) {
+      out.bootstrapToken = arg;
+      continue;
+    }
+    throw new Error(`Unexpected init remote run argument: ${arg}`);
+  }
+
+  if (!out.bootstrapToken) {
+    throw new Error(`init remote run requires BOOTSTRAP_TOKEN (prefix: ${BOOTSTRAP_TOKEN_PREFIX})`);
+  }
+  return out;
+}
+
+function parseInitRemoteFinishArgs(args) {
+  const out = {
+    mode: 'remote-finish',
+    sessionRef: null,
+    archivePath: null,
+    targetConfigPath: null,
+    targetCredsPath: null,
+    assumeYes: false,
+  };
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--target-config') {
+      i += 1;
+      if (i >= args.length) {
+        throw new Error('--target-config requires a value');
+      }
+      out.targetConfigPath = args[i];
+      continue;
+    }
+    if (arg.startsWith('--target-config=')) {
+      out.targetConfigPath = arg.slice('--target-config='.length);
+      continue;
+    }
+    if (arg === '--target-creds') {
+      i += 1;
+      if (i >= args.length) {
+        throw new Error('--target-creds requires a value');
+      }
+      out.targetCredsPath = args[i];
+      continue;
+    }
+    if (arg.startsWith('--target-creds=')) {
+      out.targetCredsPath = arg.slice('--target-creds='.length);
+      continue;
+    }
+    if (arg === '--yes' || arg === '-y') {
+      out.assumeYes = true;
+      continue;
+    }
+    if (arg.startsWith('--')) {
+      throw new Error(`Unknown init remote finish option: ${arg}`);
+    }
+    if (!out.sessionRef) {
+      out.sessionRef = arg;
+      continue;
+    }
+    if (!out.archivePath) {
+      out.archivePath = arg;
+      continue;
+    }
+    throw new Error(`Unexpected init remote finish argument: ${arg}`);
+  }
+
+  if (!out.sessionRef || !out.archivePath) {
+    throw new Error('init remote finish requires SESSION_REF and ARCHIVE_PATH');
+  }
+
+  return out;
+}
+
+function parseInitArgs(args) {
+  if (!args.length) {
+    return { mode: 'local' };
+  }
+
+  if (args[0] === 'remote') {
+    if (args.length < 2) {
+      throw new Error('init remote requires a subcommand: bootstrap, run, or finish');
+    }
+    const subcommand = args[1];
+    const rest = args.slice(2);
+    if (subcommand === 'bootstrap') {
+      return parseInitRemoteBootstrapArgs(rest);
+    }
+    if (subcommand === 'run') {
+      return parseInitRemoteRunArgs(rest);
+    }
+    if (subcommand === 'finish') {
+      return parseInitRemoteFinishArgs(rest);
+    }
+    throw new Error(`Unknown init remote subcommand: ${subcommand}`);
+  }
+
+  if (args[0] === '--remote-bootstrap') {
+    return parseInitRemoteBootstrapArgs(args.slice(1));
+  }
+  if (args[0] === '--remote') {
+    return parseInitRemoteRunArgs(args.slice(1));
+  }
+  if (args[0].startsWith('--remote=')) {
+    const token = args[0].slice('--remote='.length);
+    return parseInitRemoteRunArgs([token, ...args.slice(1)]);
+  }
+  if (args[0] === '--remote-bootstrap-finish') {
+    return parseInitRemoteFinishArgs(args.slice(1));
+  }
+
+  throw new Error(`Unexpected init arguments: ${args.join(' ')}`);
+}
+
 function parseArgs(argv) {
   const global = parseGlobalOptions(argv);
   const [command, ...rest] = global.remaining;
@@ -238,7 +423,11 @@ function parseArgs(argv) {
     parsed.options = parseProvidersArgs(rest);
     return parsed;
   }
-  if (command === 'init' || command === 'init-db' || command === 'status') {
+  if (command === 'init') {
+    parsed.options = parseInitArgs(rest);
+    return parsed;
+  }
+  if (command === 'init-db' || command === 'status') {
     if (rest.length) {
       throw new Error(`Unexpected ${command} arguments: ${rest.join(' ')}`);
     }
@@ -573,6 +762,19 @@ function usage() {
     '',
     'Commands:',
     '  init                          Initialize config/database and launch interactive setup (TTY)',
+    '  init remote bootstrap         Create one remote bootstrap token',
+    '    --expires-in <duration>     Token expiry (default 24h; e.g. 12h, 2d, 3600)',
+    '  init remote run <token>       Run onboarding and emit encrypted remote archive',
+    '    --output <path>             Output archive path (.enc JSON envelope)',
+    '    --keep-local                Keep local config/creds after archive creation',
+    '  init remote finish <ref> <archive>  Decrypt archive and import files safely',
+    '    --target-config <path>      Import destination for health-sync.toml',
+    '    --target-creds <path>       Import destination for .health-sync.creds',
+    '',
+    '  Alias forms (compatible):',
+    '  init --remote-bootstrap',
+    '  init --remote <token>',
+    '  init --remote-bootstrap-finish <ref> <archive>',
     '  init-db                       Initialize database only',
     '  auth <provider>               Run provider authentication flow for one provider',
     '    --listen-host <host>        OAuth callback listen host (default 127.0.0.1)',
@@ -597,7 +799,150 @@ async function loadContext(configPath) {
   };
 }
 
+function removeFileIfExists(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return false;
+  }
+  fs.unlinkSync(filePath);
+  return true;
+}
+
+function purgeRemoteLocalSecrets(configPath, credsPath) {
+  const removed = [];
+  if (removeFileIfExists(configPath)) {
+    removed.push(configPath);
+  }
+  if (removeFileIfExists(credsPath)) {
+    removed.push(credsPath);
+  }
+  return removed;
+}
+
+async function cmdInitRemoteBootstrap(parsed) {
+  const session = createBootstrapSession({
+    expiresInSeconds: parsed.options.expiresInSeconds,
+  });
+
+  console.log('Created remote bootstrap session.');
+  console.log(`Session fingerprint: ${session.fingerprint}`);
+  console.log(`Session expires at: ${session.expiresAt}`);
+  console.log(`Bootstrap store: ${bootstrapStoreDir()}`);
+  console.log('');
+  console.log('Share this command with the user:');
+  console.log(`  health-sync init --remote ${session.token}`);
+  console.log('');
+  console.log('Bootstrap token:');
+  console.log(session.token);
+
+  return 0;
+}
+
+async function cmdInitRemoteRun(parsed) {
+  const tokenDetails = parseBootstrapToken(parsed.options.bootstrapToken, {
+    requireNotExpired: true,
+  });
+
+  const configPath = path.resolve(parsed.configPath);
+  const credsPath = resolveCredsPath(configPath);
+  const outputPath = parsed.options.outputPath
+    ? path.resolve(parsed.options.outputPath)
+    : defaultRemoteArchivePath(configPath, tokenDetails.sessionId);
+
+  console.log('Remote onboarding mode enabled.');
+  console.log(`Bootstrap session: ${tokenDetails.keyId.slice(0, 12)}:${tokenDetails.sessionId.slice(0, 8)}`);
+  console.log(`Bootstrap expires at: ${tokenDetails.expiresAt}`);
+  console.log('');
+
+  const initCode = await cmdInitLocal(parsed);
+  if (initCode === 130) {
+    return 130;
+  }
+  if (initCode !== 0) {
+    console.warn('Init completed with warnings; packaging current config/creds anyway.');
+  }
+
+  const { payload } = buildRemotePayloadFromFiles({
+    configPath,
+    credsPath,
+    allowMissingCreds: true,
+    sourceVersion: cliVersion(),
+  });
+  const envelope = encryptRemotePayload(payload, parsed.options.bootstrapToken, {
+    requireNotExpired: true,
+  });
+  const archivePath = writeRemoteArchiveFile(envelope, outputPath);
+
+  console.log('');
+  console.log('Encrypted remote archive created successfully.');
+  console.log(`Archive path: ${archivePath}`);
+  console.log('Send this archive file to the bot/operator.');
+
+  if (parsed.options.purgeLocal) {
+    const removed = purgeRemoteLocalSecrets(configPath, credsPath);
+    if (removed.length) {
+      console.log('');
+      console.log('Purged local sensitive files after archive creation:');
+      for (const item of removed) {
+        console.log(`  - ${item}`);
+      }
+    } else {
+      console.log('');
+      console.log('No local config/creds files found to purge.');
+    }
+  } else {
+    console.log('');
+    console.log('Kept local config/creds because --keep-local was set.');
+  }
+
+  return initCode;
+}
+
+async function cmdInitRemoteFinish(parsed) {
+  const configPath = path.resolve(parsed.configPath);
+  const targetConfigPath = parsed.options.targetConfigPath
+    ? path.resolve(parsed.options.targetConfigPath)
+    : configPath;
+  const targetCredsPath = parsed.options.targetCredsPath
+    ? path.resolve(parsed.options.targetCredsPath)
+    : resolveCredsPath(targetConfigPath);
+
+  const result = importRemoteArchive({
+    sessionRef: parsed.options.sessionRef,
+    archivePath: parsed.options.archivePath,
+    targetConfigPath,
+    targetCredsPath,
+  });
+
+  console.log('Remote bootstrap import complete.');
+  console.log(`Imported config: ${result.targetConfigPath}`);
+  console.log(`Imported creds: ${result.targetCredsPath}`);
+  if (result.backups.length) {
+    console.log('Backups created:');
+    for (const backup of result.backups) {
+      console.log(`  - ${backup}`);
+    }
+  }
+  console.log(`Session consumed at: ${result.consumedAt}`);
+  console.log(`Imported token entries: ${result.tokenCount}`);
+
+  return 0;
+}
+
 async function cmdInit(parsed) {
+  const mode = parsed.options?.mode || 'local';
+  if (mode === 'remote-bootstrap') {
+    return cmdInitRemoteBootstrap(parsed);
+  }
+  if (mode === 'remote-run') {
+    return cmdInitRemoteRun(parsed);
+  }
+  if (mode === 'remote-finish') {
+    return cmdInitRemoteFinish(parsed);
+  }
+  return cmdInitLocal(parsed);
+}
+
+async function cmdInitLocal(parsed) {
   const configPath = path.resolve(parsed.configPath);
   const explicitDbPath = parsed.dbPath ? String(parsed.dbPath) : null;
 

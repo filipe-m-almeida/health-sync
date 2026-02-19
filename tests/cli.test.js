@@ -54,6 +54,27 @@ test('parseArgs has providers and init subcommands', () => {
   assert.equal(parseArgs(['init']).command, 'init');
 });
 
+test('parseArgs supports init remote subcommands and alias flags', () => {
+  const bootstrap = parseArgs(['init', 'remote', 'bootstrap', '--expires-in', '12h']);
+  assert.equal(bootstrap.command, 'init');
+  assert.equal(bootstrap.options.mode, 'remote-bootstrap');
+  assert.equal(bootstrap.options.expiresInSeconds, 12 * 60 * 60);
+
+  const run = parseArgs(['init', 'remote', 'run', 'hsr1.example', '--keep-local']);
+  assert.equal(run.options.mode, 'remote-run');
+  assert.equal(run.options.bootstrapToken, 'hsr1.example');
+  assert.equal(run.options.purgeLocal, false);
+
+  const runAlias = parseArgs(['init', '--remote', 'hsr1.alias']);
+  assert.equal(runAlias.options.mode, 'remote-run');
+  assert.equal(runAlias.options.bootstrapToken, 'hsr1.alias');
+
+  const finish = parseArgs(['init', 'remote', 'finish', 'abc123', 'bundle.enc']);
+  assert.equal(finish.options.mode, 'remote-finish');
+  assert.equal(finish.options.sessionRef, 'abc123');
+  assert.equal(finish.options.archivePath, 'bundle.enc');
+});
+
 test('parseArgs supports --version and rejects combining it with a command', () => {
   const parsed = parseArgs(['--version']);
   assert.equal(parsed.command, 'version');
@@ -116,6 +137,75 @@ test('init creates scaffolded config from example template', async (t) => {
   assert.match(content, /^\[strava\]$/m);
   assert.match(content, /^\[whoop\]$/m);
   assert.match(content, /^\[eightsleep\]$/m);
+});
+
+test('remote bootstrap -> run -> finish creates importable encrypted archive', async (t) => {
+  const dir = makeTempDir();
+  t.after(() => removeDir(dir));
+
+  const storeDir = path.join(dir, 'remote-store');
+  const priorStore = process.env.HEALTH_SYNC_REMOTE_BOOTSTRAP_DIR;
+  process.env.HEALTH_SYNC_REMOTE_BOOTSTRAP_DIR = storeDir;
+  t.after(() => {
+    if (priorStore === undefined) {
+      delete process.env.HEALTH_SYNC_REMOTE_BOOTSTRAP_DIR;
+    } else {
+      process.env.HEALTH_SYNC_REMOTE_BOOTSTRAP_DIR = priorStore;
+    }
+  });
+
+  const configPath = path.join(dir, 'user-health-sync.toml');
+  const archivePath = path.join(dir, 'payload.enc');
+  const dbPath = dbPathFor(dir, 'remote-init.sqlite');
+
+  const logs = [];
+  const originalLog = console.log;
+  console.log = (...parts) => logs.push(parts.map((part) => String(part)).join(' '));
+
+  let bootstrapRc = 1;
+  try {
+    bootstrapRc = await main(['--config', configPath, 'init', 'remote', 'bootstrap', '--expires-in', '1h']);
+  } finally {
+    console.log = originalLog;
+  }
+  assert.equal(bootstrapRc, 0);
+
+  const token = logs.find((line) => line.startsWith('hsr1.'));
+  assert.ok(token);
+
+  const runRc = await main([
+    '--config',
+    configPath,
+    '--db',
+    dbPath,
+    'init',
+    'remote',
+    'run',
+    token,
+    '--output',
+    archivePath,
+    '--keep-local',
+  ]);
+  assert.equal(runRc, 0);
+  assert.equal(fs.existsSync(archivePath), true);
+
+  const importedConfig = path.join(dir, 'imported-health-sync.toml');
+  const importedCreds = path.join(dir, '.imported-health-sync.creds');
+  const finishRc = await main([
+    'init',
+    'remote',
+    'finish',
+    token,
+    archivePath,
+    '--target-config',
+    importedConfig,
+    '--target-creds',
+    importedCreds,
+  ]);
+  assert.equal(finishRc, 0);
+  assert.equal(fs.existsSync(importedConfig), true);
+  assert.equal(fs.existsSync(importedCreds), true);
+  assert.match(fs.readFileSync(importedConfig, 'utf8'), /^\[app\]$/m);
 });
 
 test('sync continues after one provider failure and returns non-zero', async (t) => {
