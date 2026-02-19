@@ -12,7 +12,7 @@ import {
   visibleWidth,
 } from '@mariozechner/pi-tui';
 import chalk, { Chalk } from 'chalk';
-import { requestJson } from './util.js';
+import { openInBrowser, requestJson } from './util.js';
 
 const hasForceColor = typeof process.env.FORCE_COLOR === 'string'
   && process.env.FORCE_COLOR.trim() !== ''
@@ -50,6 +50,7 @@ const PROVIDER_NAMES = {
 
 const ABORT_SENTINEL = Symbol('health-sync-abort');
 const URL_PATTERN = /https?:\/\/[^\s)]+/g;
+const WRAP_MIN_WIDTH = 24;
 
 export class UserAbortError extends Error {
   constructor(message = 'Setup aborted by user.') {
@@ -96,6 +97,124 @@ function styleTextWithUrls(text, colorFn = null) {
     out += colorFn ? colorFn(tail) : tail;
   }
   return out;
+}
+
+function extractUrls(lines = []) {
+  const urls = [];
+  const seen = new Set();
+  for (const line of lines) {
+    const value = String(line || '');
+    for (const match of value.matchAll(URL_PATTERN)) {
+      const url = String(match[0]);
+      if (!seen.has(url)) {
+        seen.add(url);
+        urls.push(url);
+      }
+    }
+  }
+  return urls;
+}
+
+function wrapText(value, width) {
+  const text = String(value || '');
+  if (width <= WRAP_MIN_WIDTH || visibleWidth(text) <= width) {
+    return [text];
+  }
+
+  const words = text.split(/\s+/).filter(Boolean);
+  if (!words.length) {
+    return [''];
+  }
+
+  const lines = [];
+  let current = '';
+
+  const pushCurrent = () => {
+    if (current) {
+      lines.push(current);
+      current = '';
+    }
+  };
+
+  for (const word of words) {
+    if (!current) {
+      if (visibleWidth(word) <= width) {
+        current = word;
+      } else {
+        let pending = word;
+        while (visibleWidth(pending) > width) {
+          let part = '';
+          for (const ch of graphemes(pending)) {
+            if (visibleWidth(part + ch) > width) {
+              break;
+            }
+            part += ch;
+          }
+          if (!part) {
+            break;
+          }
+          lines.push(part);
+          pending = pending.slice(part.length);
+        }
+        current = pending;
+      }
+      continue;
+    }
+
+    const next = `${current} ${word}`;
+    if (visibleWidth(next) <= width) {
+      current = next;
+      continue;
+    }
+
+    pushCurrent();
+    if (visibleWidth(word) <= width) {
+      current = word;
+    } else {
+      let pending = word;
+      while (visibleWidth(pending) > width) {
+        let part = '';
+        for (const ch of graphemes(pending)) {
+          if (visibleWidth(part + ch) > width) {
+            break;
+          }
+          part += ch;
+        }
+        if (!part) {
+          break;
+        }
+        lines.push(part);
+        pending = pending.slice(part.length);
+      }
+      current = pending;
+    }
+  }
+
+  pushCurrent();
+  return lines.length ? lines : [''];
+}
+
+function wrapGuideLine(line, width) {
+  const value = String(line || '');
+  if (!value.trim()) {
+    return [''];
+  }
+
+  const bulletMatch = value.match(/^(-\s+)(.*)$/);
+  if (bulletMatch) {
+    const [, prefix, body] = bulletMatch;
+    const wrapped = wrapText(body, Math.max(WRAP_MIN_WIDTH, width - visibleWidth(prefix)));
+    return wrapped.map((part, index) => `${index === 0 ? prefix : ' '.repeat(prefix.length)}${part}`);
+  }
+
+  const numberMatch = value.match(/^(\d+\.\s+)(.*)$/);
+  if (numberMatch) {
+    const [, prefix, body] = numberMatch;
+    const wrapped = wrapText(body, Math.max(WRAP_MIN_WIDTH, width - visibleWidth(prefix)));
+    return wrapped.map((part, index) => `${index === 0 ? prefix : ' '.repeat(prefix.length)}${part}`);
+  }
+
+  return wrapText(value, width);
 }
 
 class MaskedInput {
@@ -717,12 +836,23 @@ async function runTuiPrompt(setupFn) {
   });
 }
 
-function createScreenText(title, lines = []) {
+function createScreenText(title, lines = [], options = {}) {
+  const {
+    allowOpen = false,
+    openHint = null,
+  } = options;
+
+  const wrapWidth = Math.max(WRAP_MIN_WIDTH, (process.stdout?.columns || 100) - 4);
+  const wrappedLines = [];
+  for (const line of lines) {
+    wrappedLines.push(...wrapGuideLine(line, wrapWidth));
+  }
+
   const titleLine = baseChalk.level > 0 ? colors.heading(title) : title;
   const divider = baseChalk.level > 0
     ? colors.muted('------------------------------------------------------------')
     : '------------------------------------------------------------';
-  const styledLines = lines.map((line) => {
+  const styledLines = wrappedLines.map((line) => {
     const value = String(line);
     if (baseChalk.level <= 0) {
       return value;
@@ -746,27 +876,64 @@ function createScreenText(title, lines = []) {
   const controls2 = baseChalk.level > 0
     ? colors.control('Enter: continue   Esc: back   Ctrl+C: exit setup')
     : 'Enter: continue   Esc: back   Ctrl+C: exit setup';
+  const controls3 = allowOpen
+    ? (baseChalk.level > 0
+      ? colors.control('Press O to open the setup URL in your browser')
+      : 'Press O to open the setup URL in your browser')
+    : '';
+  const openStatus = openHint
+    ? (baseChalk.level > 0 ? colors.muted(String(openHint)) : String(openHint))
+    : '';
 
   const out = ['', '', titleLine, divider, ''];
-  if (lines.length) {
+  if (wrappedLines.length) {
     out.push(...styledLines, '');
   }
-  out.push(controls, controls2, '');
+  out.push(controls, controls2);
+  if (controls3) {
+    out.push(controls3);
+  }
+  if (openStatus) {
+    out.push(openStatus);
+  }
+  out.push('');
   return out.join('\n');
 }
 
-async function promptSelect({ title, lines = [], items }) {
+async function promptSelect({
+  title,
+  lines = [],
+  items,
+  openableUrls = null,
+}) {
   if (!interactiveTerminalAvailable()) {
     return null;
   }
 
+  const urls = openableUrls && openableUrls.length ? openableUrls : extractUrls(lines);
   const value = await runTuiPrompt((tui, finish) => {
     const root = new Container();
-    const heading = new Text(createScreenText(title, lines), 0, 0);
+    let openHint = '';
+    const setHeading = () => heading.setText(createScreenText(title, lines, {
+      allowOpen: urls.length > 0,
+      openHint,
+    }));
+    const heading = new Text('', 0, 0);
+    setHeading();
     const list = new SelectList(items, Math.min(12, Math.max(3, items.length)), SELECT_THEME);
 
-    list.onSelect = (item) => finish(item.value);
-    list.onCancel = () => finish(null);
+    list.onSelect = (item) => {
+      if (typeof removeListener === 'function') {
+        removeListener();
+      }
+      finish(item.value);
+    };
+    list.onCancel = () => {
+      if (typeof removeListener === 'function') {
+        removeListener();
+      }
+      finish(null);
+    };
 
     root.addChild(heading);
     root.addChild(new Spacer(2));
@@ -774,6 +941,19 @@ async function promptSelect({ title, lines = [], items }) {
 
     tui.addChild(root);
     tui.setFocus(list);
+
+    const removeListener = tui.addInputListener((data) => {
+      if ((data === 'o' || data === 'O') && urls.length) {
+        const opened = openInBrowser(urls[0]);
+        openHint = opened
+          ? `Opened: ${urls[0]}`
+          : `Could not open browser. Open manually: ${urls[0]}`;
+        setHeading();
+        tui.requestRender();
+        return { consume: true };
+      }
+      return undefined;
+    });
   });
 
   if (value === ABORT_SENTINEL) {
@@ -789,14 +969,26 @@ async function promptInput({
   allowEmpty = true,
   requiredLabel = null,
   secret = false,
+  openableUrls = null,
 }) {
   if (!interactiveTerminalAvailable()) {
     return null;
   }
 
+  const urls = openableUrls && openableUrls.length ? openableUrls : extractUrls(lines);
   const value = await runTuiPrompt((tui, finish) => {
     const root = new Container();
-    const heading = new Text(createScreenText(title, lines), 0, 0);
+    let openHint = '';
+    const setHeading = (extraLines = null) => heading.setText(createScreenText(
+      title,
+      extraLines || lines,
+      {
+        allowOpen: urls.length > 0,
+        openHint,
+      },
+    ));
+    const heading = new Text('', 0, 0);
+    setHeading();
     const input = secret ? new MaskedInput() : new Input();
 
     if (hasText(initialValue)) {
@@ -812,14 +1004,22 @@ async function promptInput({
         const errorLine = requiredLabel
           ? `Value required: ${requiredLabel}`
           : 'Value required.';
-        heading.setText(createScreenText(title, [...lines, '', errorLine]));
+        setHeading([...lines, '', errorLine]);
         tui.requestRender();
         return;
+      }
+      if (typeof removeListener === 'function') {
+        removeListener();
       }
       finish(value);
     };
 
-    input.onEscape = () => finish(null);
+    input.onEscape = () => {
+      if (typeof removeListener === 'function') {
+        removeListener();
+      }
+      finish(null);
+    };
     if (secret) {
       input.onAbort = () => finish(ABORT_SENTINEL);
     }
@@ -830,6 +1030,19 @@ async function promptInput({
 
     tui.addChild(root);
     tui.setFocus(input);
+
+    const removeListener = tui.addInputListener((data) => {
+      if ((data === 'o' || data === 'O') && urls.length) {
+        const opened = openInBrowser(urls[0]);
+        openHint = opened
+          ? `Opened: ${urls[0]}`
+          : `Could not open browser. Open manually: ${urls[0]}`;
+        setHeading();
+        tui.requestRender();
+        return { consume: true };
+      }
+      return undefined;
+    });
   });
 
   if (value === ABORT_SENTINEL) {
@@ -838,7 +1051,14 @@ async function promptInput({
   return value;
 }
 
-async function promptYesNo(title, lines, yesLabel = 'Yes', noLabel = 'No') {
+async function promptYesNo(
+  title,
+  lines,
+  yesLabel = 'Yes',
+  noLabel = 'No',
+  options = {},
+) {
+  const { openableUrls = null } = options;
   const choice = await promptSelect({
     title,
     lines,
@@ -846,11 +1066,79 @@ async function promptYesNo(title, lines, yesLabel = 'Yes', noLabel = 'No') {
       { value: 'yes', label: yesLabel },
       { value: 'no', label: noLabel },
     ],
+    openableUrls,
   });
   if (choice === null) {
-    return false;
+    return null;
   }
   return choice === 'yes';
+}
+
+function stagePrefixLines(progress = null, stage = null) {
+  const out = [];
+  if (progress && Number.isFinite(progress.index) && Number.isFinite(progress.total) && progress.total > 0) {
+    out.push(`Provider ${progress.index} of ${progress.total}: ${providerName(progress.providerId || '')}`);
+  }
+  if (stage && Number.isFinite(stage.index) && Number.isFinite(stage.total) && stage.total > 0) {
+    out.push(`Stage ${stage.index} of ${stage.total}: ${stage.label || 'Setup'}`);
+  }
+  if (out.length) {
+    out.push('');
+  }
+  return out;
+}
+
+function splitScopeValues(value) {
+  return String(value || '')
+    .split(/[\s,]+/)
+    .map((scope) => scope.trim())
+    .filter(Boolean);
+}
+
+function validateFieldValue(providerId, field, value) {
+  if (!hasText(value)) {
+    return null;
+  }
+
+  if (field.key === 'redirect_uri') {
+    let parsed;
+    try {
+      parsed = new URL(String(value));
+    } catch {
+      return 'Redirect URI must be a valid URL (for example: http://localhost:8486/callback).';
+    }
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return 'Redirect URI must use http:// or https://.';
+    }
+    if (!hasText(parsed.pathname)) {
+      return 'Redirect URI must include a callback path.';
+    }
+    if (!parsed.pathname.includes('callback')) {
+      return 'Redirect URI should include `/callback` to match provider app settings.';
+    }
+  }
+
+  if (providerId === 'whoop' && field.key === 'scopes') {
+    const scopes = splitScopeValues(value);
+    if (!scopes.includes('offline')) {
+      return 'WHOOP scopes must include `offline` to receive refresh tokens.';
+    }
+  }
+
+  if (providerId === 'strava' && field.key === 'redirect_uri') {
+    let parsed;
+    try {
+      parsed = new URL(String(value));
+    } catch {
+      return null;
+    }
+    if (!hasText(parsed.hostname)) {
+      return 'Strava redirect URI must include a hostname.';
+    }
+  }
+
+  return null;
 }
 
 function normalizePromptedValue(rawValue, previousValue, required) {
@@ -867,8 +1155,17 @@ function normalizePromptedValue(rawValue, previousValue, required) {
   return trimmed;
 }
 
-function fieldPromptLines(providerId, field, currentLabel, guide = null, step = null, total = null) {
+function fieldPromptLines(
+  providerId,
+  field,
+  currentLabel,
+  guide = null,
+  step = null,
+  total = null,
+  progress = null,
+) {
   const out = [];
+  out.push(...stagePrefixLines(progress, null));
   if (step !== null && total !== null) {
     out.push(`Step ${step} of ${total}`);
     out.push('');
@@ -895,7 +1192,12 @@ function fieldPromptLines(providerId, field, currentLabel, guide = null, step = 
 }
 
 async function promptTextField(providerId, cfg, field, options = {}) {
-  const { guide = null, step = null, total = null } = options;
+  const {
+    guide = null,
+    step = null,
+    total = null,
+    progress = null,
+  } = options;
   const currentValue = cfg?.[field.key];
   const isSecret = Boolean(field.secret);
   const existingSecretMask = isSecret && hasText(currentValue)
@@ -904,9 +1206,14 @@ async function promptTextField(providerId, cfg, field, options = {}) {
   const currentLabel = hasText(currentValue)
     ? (isSecret ? existingSecretMask : String(currentValue))
     : '(not set)';
-  const lines = fieldPromptLines(providerId, field, currentLabel, guide, step, total);
+  const lines = fieldPromptLines(providerId, field, currentLabel, guide, step, total, progress);
 
   const required = Boolean(field.required);
+  let validationError = null;
+  const openableUrls = extractUrls([
+    ...lines,
+    guide?.fieldHelp?.[field.key] || '',
+  ]);
 
   while (true) {
     const initialValue = hasText(currentValue)
@@ -915,11 +1222,12 @@ async function promptTextField(providerId, cfg, field, options = {}) {
 
     const rawValue = await promptInput({
       title: `${providerName(providerId)}: ${field.label}`,
-      lines,
+      lines: validationError ? [...lines, '', validationError] : lines,
       initialValue,
       allowEmpty: true,
       requiredLabel: field.label,
       secret: isSecret,
+      openableUrls,
     });
 
     if (rawValue === null) {
@@ -930,8 +1238,17 @@ async function promptTextField(providerId, cfg, field, options = {}) {
       ? trimOrNull(currentValue)
       : normalizePromptedValue(rawValue, currentValue, required);
     if (required && !hasText(normalized)) {
+      validationError = `Value required: ${field.label}`;
       continue;
     }
+
+    const fieldError = validateFieldValue(providerId, field, normalized);
+    if (fieldError) {
+      validationError = fieldError;
+      continue;
+    }
+
+    validationError = null;
 
     return {
       ok: true,
@@ -940,10 +1257,11 @@ async function promptTextField(providerId, cfg, field, options = {}) {
   }
 }
 
-async function promptStravaConfig(cfg, guide = null) {
+async function promptStravaConfig(cfg, guide = null, progress = null) {
   const mode = await promptSelect({
     title: 'Strava setup mode',
     lines: [
+      ...stagePrefixLines(progress, null),
       '- OAuth app mode will ask for client_id/client_secret/redirect_uri.',
       '- Static token mode stores [strava].access_token directly.',
     ],
@@ -963,7 +1281,7 @@ async function promptStravaConfig(cfg, guide = null) {
       label: 'Access Token',
       required: true,
       secret: true,
-    }, { guide, step: 1, total: 1 });
+    }, { guide, step: 1, total: 1, progress });
 
     if (!tokenField.ok) {
       return { ok: false, updates: {}, back: true };
@@ -993,6 +1311,7 @@ async function promptStravaConfig(cfg, guide = null) {
       guide,
       step: i + 1,
       total: fields.length,
+      progress,
     });
     if (!value.ok) {
       return { ok: false, updates: {}, back: true };
@@ -1003,7 +1322,7 @@ async function promptStravaConfig(cfg, guide = null) {
   return { ok: true, updates };
 }
 
-async function promptEightSleepConfig(cfg, guide = null) {
+async function promptEightSleepConfig(cfg, guide = null, progress = null) {
   const updates = {
     access_token: null,
   };
@@ -1019,9 +1338,10 @@ async function promptEightSleepConfig(cfg, guide = null) {
       guide,
       step: i + 1,
       total: fields.length,
+      progress,
     });
     if (!value.ok) {
-      return { ok: false, updates: {} };
+      return { ok: false, updates: {}, back: true };
     }
     updates[field.key] = value.value;
   }
@@ -1029,31 +1349,39 @@ async function promptEightSleepConfig(cfg, guide = null) {
   return { ok: true, updates };
 }
 
-async function promptProviderConfigValues(providerId, cfg, guide) {
+async function promptProviderConfigValues(providerId, cfg, guide, options = {}) {
+  const { progress = null } = options;
   if (!interactiveTerminalAvailable() || !guide.fields.length) {
     return { ok: true, updates: {} };
   }
 
   if (providerId === 'strava') {
-    return promptStravaConfig(cfg, guide);
+    return promptStravaConfig(cfg, guide, progress);
   }
 
   if (providerId === 'eightsleep') {
-    return promptEightSleepConfig(cfg, guide);
+    return promptEightSleepConfig(cfg, guide, progress);
   }
 
   const updates = {};
-  for (let i = 0; i < guide.fields.length; i += 1) {
+  let i = 0;
+  while (i < guide.fields.length) {
     const field = guide.fields[i];
     const value = await promptTextField(providerId, cfg, field, {
       guide,
       step: i + 1,
       total: guide.fields.length,
+      progress,
     });
     if (!value.ok) {
-      return { ok: false, updates: {} };
+      if (i > 0) {
+        i -= 1;
+        continue;
+      }
+      return { ok: false, updates: {}, back: true };
     }
     updates[field.key] = value.value;
+    i += 1;
   }
 
   return { ok: true, updates };
@@ -1167,82 +1495,422 @@ export async function promptAuthProviderChecklist(providerRows) {
   return selection;
 }
 
+function configValuePreview(key, value, guide = null) {
+  if (!hasText(value)) {
+    return '(not set)';
+  }
+  const explicitSecret = Array.isArray(guide?.fields)
+    && guide.fields.some((field) => field.key === key && field.secret);
+  const inferredSecret = /secret|password|token|api_key/i.test(String(key));
+  if (explicitSecret || inferredSecret) {
+    return secretMask(String(value));
+  }
+  return String(value);
+}
+
+function buildProviderSummaryLines(providerId, cfg, updates, guide, progress = null, stage = null) {
+  const merged = {
+    ...(cfg || {}),
+    ...(updates || {}),
+    enabled: true,
+  };
+  const keys = new Set(['enabled']);
+  for (const key of Object.keys(updates || {})) {
+    keys.add(key);
+  }
+  for (const field of guide?.fields || []) {
+    keys.add(field.key);
+  }
+
+  const lines = [
+    ...stagePrefixLines(progress, stage),
+    'Review what will be saved to health-sync.toml:',
+    '',
+  ];
+  for (const key of keys) {
+    lines.push(`- [${providerId}].${key} = ${configValuePreview(key, merged[key], guide)}`);
+  }
+  lines.push('');
+  lines.push('You can go back to edit values before continuing.');
+  return lines;
+}
+
+function shouldRunPreflight(providerId) {
+  return providerId === 'hevy' || providerId === 'eightsleep';
+}
+
+async function providerSetupPreflight(providerId, cfg) {
+  if (providerId === 'hevy') {
+    const apiKey = trimOrNull(cfg?.api_key);
+    if (!apiKey) {
+      throw new Error('Hevy API key is missing.');
+    }
+    return providerTokenHealthCheck('hevy', cfg, apiKey);
+  }
+
+  if (providerId === 'eightsleep') {
+    if (hasText(cfg?.access_token)) {
+      return providerTokenHealthCheck('eightsleep', cfg, String(cfg.access_token).trim());
+    }
+    const email = trimOrNull(cfg?.email);
+    const password = trimOrNull(cfg?.password);
+    if (!email || !password) {
+      throw new Error('Eight Sleep username/email and password are missing.');
+    }
+
+    const tokenPayload = await requestJson(cfg?.auth_url || 'https://auth-api.8slp.net/v1/tokens', {
+      method: 'POST',
+      json: {
+        client_id: cfg?.client_id,
+        client_secret: cfg?.client_secret,
+        grant_type: 'password',
+        username: email,
+        password,
+      },
+    });
+
+    const accessToken = tokenPayload?.access_token;
+    if (!hasText(accessToken)) {
+      throw new Error('Eight Sleep did not return an access token for these credentials.');
+    }
+    await providerTokenHealthCheck('eightsleep', cfg, String(accessToken).trim());
+    return 'Credentials accepted by Eight Sleep auth and users/me endpoints.';
+  }
+
+  return null;
+}
+
+export async function promptResumeOnboardingSession(state = {}) {
+  if (!interactiveTerminalAvailable()) {
+    return 'resume';
+  }
+  const selected = Array.isArray(state?.selectedProviders) ? state.selectedProviders : [];
+  const completed = Number.isFinite(state?.nextIndex) ? state.nextIndex : 0;
+  const lines = [
+    `Found an unfinished onboarding session (${completed}/${selected.length} providers completed).`,
+    '',
+    `Providers in session: ${selected.join(', ') || '(none)'}`,
+    '',
+    'Choose how you want to continue.',
+  ];
+  const choice = await promptSelect({
+    title: 'Resume onboarding',
+    lines,
+    items: [
+      { value: 'resume', label: 'Resume setup (recommended)' },
+      { value: 'restart', label: 'Start over' },
+    ],
+  });
+  if (choice === null) {
+    return 'resume';
+  }
+  return choice;
+}
+
+export async function promptAuthFailureRecovery(providerId, errorText, progress = null) {
+  if (!interactiveTerminalAvailable()) {
+    return 'skip';
+  }
+  const lines = [
+    ...stagePrefixLines(progress, null),
+    `Auth failed for ${providerName(providerId)}.`,
+    '',
+    `Error: ${String(errorText || 'Unknown error')}`,
+    '',
+    'Choose what to do next.',
+  ];
+  const choice = await promptSelect({
+    title: `${providerName(providerId)}: auth recovery`,
+    lines,
+    items: [
+      { value: 'retry', label: 'Retry auth now' },
+      { value: 'edit', label: 'Edit setup values' },
+      { value: 'guide', label: 'Re-open setup guide' },
+      { value: 'skip', label: 'Skip this provider' },
+    ],
+  });
+  if (choice === null) {
+    return 'retry';
+  }
+  return choice;
+}
+
+export async function promptSmokeTestChoice(providerIds = []) {
+  if (!interactiveTerminalAvailable() || !providerIds.length) {
+    return false;
+  }
+  const lines = [
+    `Run a quick smoke sync now for: ${providerIds.join(', ')}`,
+    '',
+    'This verifies setup end-to-end before you leave onboarding.',
+  ];
+  const choice = await promptYesNo(
+    'Run smoke sync check?',
+    lines,
+    'Run smoke sync',
+    'Skip smoke sync',
+  );
+  return choice === true;
+}
+
+function wizardStageLabel(stageId, guide) {
+  if (stageId === 'redo') {
+    return 'Re-run check';
+  }
+  if (stageId === 'guide') {
+    return 'Setup guide';
+  }
+  if (stageId === 'config') {
+    return 'Configure values';
+  }
+  if (stageId === 'summary') {
+    return 'Review changes';
+  }
+  if (stageId === 'preflight') {
+    return 'Test credentials';
+  }
+  if (stageId === 'confirm') {
+    return guide?.requiresAuth === false ? 'Save setup' : 'Connect account';
+  }
+  return 'Setup';
+}
+
 export async function runProviderPreAuthWizard(providerId, cfg, db, options = {}) {
   const {
     showGuide = false,
     showConfigPrompts = false,
     askRedoIfWorking = true,
+    progress = null,
+    startAt = null,
   } = options;
 
   const status = await providerAuthStatus(providerId, cfg, db);
-
-  if (askRedoIfWorking && status.configured && status.working && interactiveTerminalAvailable()) {
-    const redo = await promptYesNo(
-      `${providerName(providerId)} is already configured`,
-      [
-        status.detail,
-        '',
-        'Do you want to run auth again for this provider?',
-      ],
-      'Re-run auth',
-      'Skip this provider',
-    );
-
-    if (!redo) {
-      return {
-        proceed: false,
-        updates: {},
-        status,
-      };
-    }
-  }
-
   const guide = setupGuide(providerId, cfg);
   const canShowGuide = showGuide && interactiveTerminalAvailable();
+  const canPromptConfig = showConfigPrompts && guide.fields.length > 0;
+  const needsPreflight = canPromptConfig && shouldRunPreflight(providerId);
 
+  const stages = [];
+  if (askRedoIfWorking && status.configured && status.working && interactiveTerminalAvailable()) {
+    stages.push('redo');
+  }
+  if (canShowGuide) {
+    stages.push('guide');
+  }
+  if (canPromptConfig) {
+    stages.push('config');
+    stages.push('summary');
+  }
+  if (needsPreflight) {
+    stages.push('preflight');
+  }
+  if (canShowGuide) {
+    stages.push('confirm');
+  }
+
+  let stageCursor = 0;
+  if (startAt && stages.includes(startAt)) {
+    stageCursor = stages.indexOf(startAt);
+  }
   let updates = {};
-  let showGuideScreen = canShowGuide;
-  while (true) {
-    if (showGuideScreen) {
-      const proceed = await promptYesNo(
-        guide.title,
-        guide.lines,
-        'Continue setup',
+  let preflightDetail = null;
+
+  while (stageCursor < stages.length) {
+    const stageId = stages[stageCursor];
+    const stageMeta = {
+      index: stageCursor + 1,
+      total: stages.length,
+      label: wizardStageLabel(stageId, guide),
+    };
+    const stagePrefix = stagePrefixLines(progress, stageMeta);
+
+    if (stageId === 'redo') {
+      const redo = await promptYesNo(
+        `${providerName(providerId)} is already configured`,
+        [
+          ...stagePrefix,
+          status.detail,
+          '',
+          'Do you want to run auth again for this provider?',
+        ],
+        'Re-run auth',
         'Skip this provider',
       );
+      if (redo === null) {
+        if (stageCursor > 0) {
+          stageCursor -= 1;
+        }
+        continue;
+      }
+      if (!redo) {
+        return {
+          proceed: false,
+          updates: {},
+          status,
+          reason: 'skipped',
+        };
+      }
+      stageCursor += 1;
+      continue;
+    }
 
+    if (stageId === 'guide') {
+      const proceed = await promptYesNo(
+        guide.title,
+        [...stagePrefix, ...guide.lines],
+        'Continue setup',
+        'Skip this provider',
+        {
+          openableUrls: extractUrls(guide.lines),
+        },
+      );
+
+      if (proceed === null) {
+        if (stageCursor > 0) {
+          stageCursor -= 1;
+        }
+        continue;
+      }
       if (!proceed) {
         return {
           proceed: false,
           updates: {},
           status,
+          reason: 'skipped',
         };
       }
+      stageCursor += 1;
+      continue;
     }
 
-    if (showConfigPrompts) {
-      const promptResult = await promptProviderConfigValues(providerId, cfg, guide);
+    if (stageId === 'config') {
+      const promptResult = await promptProviderConfigValues(providerId, {
+        ...(cfg || {}),
+        ...(updates || {}),
+      }, guide, {
+        progress,
+      });
       if (!promptResult.ok) {
-        if (promptResult.back && canShowGuide) {
-          showGuideScreen = true;
+        if (promptResult.back) {
+          if (stageCursor > 0) {
+            stageCursor -= 1;
+          }
           continue;
         }
         return {
           proceed: false,
           updates: {},
           status,
+          reason: 'cancelled',
         };
       }
-      updates = promptResult.updates;
+      updates = {
+        ...updates,
+        ...(promptResult.updates || {}),
+      };
+      stageCursor += 1;
+      continue;
     }
-    break;
-  }
 
-  if (canShowGuide) {
-    const requiresAuth = guide.requiresAuth !== false;
-    const startAuth = await promptYesNo(
-      requiresAuth ? `${providerName(providerId)}: ready to connect` : `${providerName(providerId)}: finish setup`,
-      requiresAuth
+    if (stageId === 'summary') {
+      const summaryChoice = await promptSelect({
+        title: `${providerName(providerId)}: review changes`,
+        lines: buildProviderSummaryLines(providerId, cfg, updates, guide, progress, stageMeta),
+        items: [
+          { value: 'continue', label: 'Save and continue' },
+          { value: 'back', label: 'Back to edit values' },
+          { value: 'skip', label: 'Skip this provider' },
+        ],
+      });
+      if (summaryChoice === null || summaryChoice === 'back') {
+        if (stageCursor > 0) {
+          stageCursor -= 1;
+        }
+        continue;
+      }
+      if (summaryChoice === 'skip') {
+        return {
+          proceed: false,
+          updates: {},
+          status,
+          reason: 'skipped',
+        };
+      }
+      stageCursor += 1;
+      continue;
+    }
+
+    if (stageId === 'preflight') {
+      const preflightChoice = await promptSelect({
+        title: `${providerName(providerId)}: test setup`,
+        lines: [
+          ...stagePrefix,
+          'Run a quick connection test before saving/connecting.',
+          'This helps catch bad credentials early.',
+        ],
+        items: [
+          { value: 'run', label: 'Run test now (recommended)' },
+          { value: 'skiptest', label: 'Skip test' },
+          { value: 'back', label: 'Back to edit values' },
+        ],
+      });
+
+      if (preflightChoice === null || preflightChoice === 'back') {
+        if (stageCursor > 0) {
+          stageCursor -= 1;
+        }
+        continue;
+      }
+
+      if (preflightChoice === 'skiptest') {
+        preflightDetail = 'Skipped setup connectivity test.';
+        stageCursor += 1;
+        continue;
+      }
+
+      try {
+        preflightDetail = await providerSetupPreflight(providerId, {
+          ...(cfg || {}),
+          ...(updates || {}),
+        });
+        stageCursor += 1;
+        continue;
+      } catch (err) {
+        const action = await promptSelect({
+          title: `${providerName(providerId)}: test failed`,
+          lines: [
+            ...stagePrefix,
+            err?.message || String(err),
+            '',
+            'Choose how to recover.',
+          ],
+          items: [
+            { value: 'retry', label: 'Retry test' },
+            { value: 'back', label: 'Back to edit values' },
+            { value: 'skip', label: 'Skip this provider' },
+          ],
+        });
+        if (action === 'retry' || action === null) {
+          continue;
+        }
+        if (action === 'back') {
+          if (stageCursor > 0) {
+            stageCursor -= 1;
+          }
+          continue;
+        }
+        return {
+          proceed: false,
+          updates: {},
+          status,
+          reason: 'skipped',
+        };
+      }
+    }
+
+    if (stageId === 'confirm') {
+      const requiresAuth = guide.requiresAuth !== false;
+      const finalLines = requiresAuth
         ? [
           '- Next, health-sync will start the auth flow for this provider.',
           '- Keep this terminal open while you finish consent in the browser.',
@@ -1253,17 +1921,37 @@ export async function runProviderPreAuthWizard(providerId, cfg, db, options = {}
           : [
             '- We will save these settings to health-sync.toml.',
             '- No browser auth step is required for this provider.',
-          ]),
-      requiresAuth ? 'Start auth now' : 'Save setup',
-      'Skip for now',
-    );
+          ]);
+      if (preflightDetail) {
+        finalLines.unshift(`- Setup test: ${preflightDetail}`);
+      }
 
-    if (!startAuth) {
-      return {
-        proceed: false,
-        updates: {},
-        status,
-      };
+      const startAuth = await promptYesNo(
+        requiresAuth ? `${providerName(providerId)}: ready to connect` : `${providerName(providerId)}: finish setup`,
+        [
+          ...stagePrefix,
+          ...finalLines,
+        ],
+        requiresAuth ? 'Start auth now' : 'Save setup',
+        'Skip for now',
+      );
+
+      if (startAuth === null) {
+        if (stageCursor > 0) {
+          stageCursor -= 1;
+        }
+        continue;
+      }
+      if (!startAuth) {
+        return {
+          proceed: false,
+          updates: {},
+          status,
+          reason: 'skipped',
+        };
+      }
+      stageCursor += 1;
+      continue;
     }
   }
 
@@ -1271,6 +1959,7 @@ export async function runProviderPreAuthWizard(providerId, cfg, db, options = {}
     proceed: true,
     updates,
     status,
+    preflightDetail,
   };
 }
 

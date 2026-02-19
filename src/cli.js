@@ -15,7 +15,10 @@ import {
   authProviderDisplayName,
   hasInteractiveAuthUi,
   isUserAbortError,
+  promptAuthFailureRecovery,
   promptAuthProviderChecklist,
+  promptResumeOnboardingSession,
+  promptSmokeTestChoice,
   runProviderPreAuthWizard,
   shouldShowBuiltInGuide,
 } from './auth-onboarding.js';
@@ -325,6 +328,85 @@ function providerLikelySetup(providerId, section, db, supportsAuth) {
   return hasSavedAccessToken(providerId, section, db);
 }
 
+function onboardingStatePath(configPath) {
+  return path.join(path.dirname(path.resolve(configPath)), '.health-sync.onboarding-state.json');
+}
+
+function loadOnboardingState(configPath) {
+  const statePath = onboardingStatePath(configPath);
+  if (!fs.existsSync(statePath)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    if (!Array.isArray(parsed?.selectedProviders)) {
+      return null;
+    }
+    return {
+      path: statePath,
+      selectedProviders: parsed.selectedProviders.map((id) => String(id)),
+      nextIndex: Number.isFinite(parsed.nextIndex) ? Math.max(0, Math.trunc(parsed.nextIndex)) : 0,
+      results: Array.isArray(parsed.results) ? parsed.results : [],
+      updatedAt: parsed.updatedAt || null,
+      createdAt: parsed.createdAt || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveOnboardingState(configPath, state) {
+  const statePath = onboardingStatePath(configPath);
+  const payload = {
+    selectedProviders: Array.isArray(state?.selectedProviders) ? state.selectedProviders : [],
+    nextIndex: Number.isFinite(state?.nextIndex) ? Math.max(0, Math.trunc(state.nextIndex)) : 0,
+    results: Array.isArray(state?.results) ? state.results : [],
+    createdAt: state?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(statePath, JSON.stringify(payload, null, 2));
+  return statePath;
+}
+
+function clearOnboardingState(configPath) {
+  const statePath = onboardingStatePath(configPath);
+  if (!fs.existsSync(statePath)) {
+    return;
+  }
+  fs.unlinkSync(statePath);
+}
+
+function printOnboardingCompletionReport(summary = {}, smoke = null) {
+  const {
+    configured = [],
+    skipped = [],
+    failed = [],
+  } = summary;
+
+  console.log('');
+  console.log('Onboarding Summary:');
+  console.log(`  configured: ${configured.length ? configured.join(', ') : '(none)'}`);
+  console.log(`  skipped:    ${skipped.length ? skipped.join(', ') : '(none)'}`);
+  console.log(`  failed:     ${failed.length ? failed.map((item) => item.providerId).join(', ') : '(none)'}`);
+
+  if (smoke && Array.isArray(smoke.results) && smoke.results.length) {
+    console.log('');
+    console.log('Smoke Sync Results:');
+    for (const result of smoke.results) {
+      if (result.ok) {
+        console.log(`  PASS ${result.providerId}`);
+      } else {
+        console.log(`  FAIL ${result.providerId}: ${result.error}`);
+      }
+    }
+  }
+
+  console.log('');
+  console.log('Next commands:');
+  console.log('  health-sync sync');
+  console.log('  health-sync status');
+}
+
 function requireProvider(context, providerId) {
   const plugin = context.providers.get(providerId);
   if (!plugin) {
@@ -359,42 +441,77 @@ async function runAuthForProvider({
   showGuide,
   showConfigPrompts,
   askRedoIfWorking,
+  progress = null,
+  wizardStartAt = null,
 }) {
   const plugin = requireAuthPlugin(context, providerId);
 
-  scaffoldProviderConfig(configPath, providerId);
-  let loadedConfig = loadConfig(configPath);
+  let currentStartAt = wizardStartAt;
+  while (true) {
+    scaffoldProviderConfig(configPath, providerId);
+    let loadedConfig = loadConfig(configPath);
 
-  const wizard = await runProviderPreAuthWizard(
-    providerId,
-    configSectionForProvider(loadedConfig.data, providerId),
-    db,
-    {
-      showGuide,
-      showConfigPrompts,
-      askRedoIfWorking,
-    },
-  );
+    const wizard = await runProviderPreAuthWizard(
+      providerId,
+      configSectionForProvider(loadedConfig.data, providerId),
+      db,
+      {
+        showGuide,
+        showConfigPrompts,
+        askRedoIfWorking,
+        progress,
+        startAt: currentStartAt,
+      },
+    );
 
-  if (!wizard.proceed) {
-    return { skipped: true };
+    if (!wizard.proceed) {
+      return { skipped: true, reason: wizard.reason || 'skipped' };
+    }
+
+    const updates = {
+      enabled: true,
+      ...(wizard.updates || {}),
+    };
+    updateProviderConfigValues(configPath, providerId, updates);
+    loadedConfig = loadConfig(configPath);
+
+    try {
+      await plugin.auth(db, loadedConfig.data, new PluginHelpers(loadedConfig.data), {
+        listenHost,
+        listenPort,
+        configPath,
+        dbPath,
+      });
+      return {
+        skipped: false,
+        preflightDetail: wizard.preflightDetail || null,
+      };
+    } catch (err) {
+      if (!hasInteractiveAuthUi() || (!showGuide && !showConfigPrompts)) {
+        throw err;
+      }
+      const action = await promptAuthFailureRecovery(providerId, err?.message || String(err), progress);
+      if (action === 'retry') {
+        continue;
+      }
+      if (action === 'edit') {
+        currentStartAt = 'config';
+        continue;
+      }
+      if (action === 'guide') {
+        currentStartAt = 'guide';
+        continue;
+      }
+      if (action === 'skip') {
+        return {
+          skipped: true,
+          reason: 'auth_failed_skip',
+          error: err?.message || String(err),
+        };
+      }
+      throw err;
+    }
   }
-
-  const updates = {
-    enabled: true,
-    ...(wizard.updates || {}),
-  };
-  updateProviderConfigValues(configPath, providerId, updates);
-  loadedConfig = loadConfig(configPath);
-
-  await plugin.auth(db, loadedConfig.data, new PluginHelpers(loadedConfig.data), {
-    listenHost,
-    listenPort,
-    configPath,
-    dbPath,
-  });
-
-  return { skipped: false };
 }
 
 async function runConfigOnlySetupForProvider({
@@ -405,6 +522,8 @@ async function runConfigOnlySetupForProvider({
   showGuide,
   showConfigPrompts,
   askRedoIfWorking,
+  progress = null,
+  wizardStartAt = null,
 }) {
   requireProvider(context, providerId);
 
@@ -419,11 +538,13 @@ async function runConfigOnlySetupForProvider({
       showGuide,
       showConfigPrompts,
       askRedoIfWorking,
+      progress,
+      startAt: wizardStartAt,
     },
   );
 
   if (!wizard.proceed) {
-    return { skipped: true };
+    return { skipped: true, reason: wizard.reason || 'skipped' };
   }
 
   const updates = {
@@ -431,7 +552,10 @@ async function runConfigOnlySetupForProvider({
     ...(wizard.updates || {}),
   };
   updateProviderConfigValues(configPath, providerId, updates);
-  return { skipped: false };
+  return {
+    skipped: false,
+    preflightDetail: wizard.preflightDetail || null,
+  };
 }
 
 async function runGuidedSetupForProvider(options) {
@@ -493,10 +617,10 @@ async function cmdInit(parsed) {
   }
 
   const authDb = openDb(dbPath, { credsPath: resolveCredsPath(configPath) });
-  const failures = [];
+  const setupResults = [];
 
   try {
-    const context = await loadContext(configPath);
+    let context = await loadContext(configPath);
     const providerRows = Array.from(context.providers.keys())
       .sort()
       .map((providerId) => {
@@ -530,15 +654,63 @@ async function cmdInit(parsed) {
       return 0;
     }
 
-    const selected = await promptAuthProviderChecklist(providerRows);
-    if (!selected.length) {
-      console.log('Skipped provider setup during init.');
-      return 0;
+    const availableProviders = new Set(providerRows.map((row) => row.id));
+    const resumeState = loadOnboardingState(configPath);
+
+    let selected = [];
+    let startIndex = 0;
+    if (resumeState?.selectedProviders?.length) {
+      const filtered = resumeState.selectedProviders.filter((id) => availableProviders.has(id));
+      if (filtered.length) {
+        const resumeChoice = await promptResumeOnboardingSession({
+          ...resumeState,
+          selectedProviders: filtered,
+        });
+        if (resumeChoice === 'resume') {
+          selected = filtered;
+          startIndex = Math.min(filtered.length, Math.max(0, resumeState.nextIndex || 0));
+          if (Array.isArray(resumeState.results)) {
+            setupResults.push(...resumeState.results);
+          }
+          console.log(`Resuming onboarding at provider ${startIndex + 1}/${selected.length}.`);
+        } else {
+          clearOnboardingState(configPath);
+        }
+      } else {
+        clearOnboardingState(configPath);
+      }
     }
 
-    for (const providerId of selected) {
+    if (!selected.length) {
+      selected = await promptAuthProviderChecklist(providerRows);
+      if (!selected.length) {
+        console.log('Skipped provider setup during init.');
+        clearOnboardingState(configPath);
+        return 0;
+      }
+      startIndex = 0;
+      saveOnboardingState(configPath, {
+        selectedProviders: selected,
+        nextIndex: 0,
+        results: [],
+      });
+    }
+
+    for (let index = startIndex; index < selected.length; index += 1) {
+      const providerId = selected[index];
       const plugin = context.providers.get(providerId);
       const label = authProviderDisplayName(providerId);
+      const progress = {
+        providerId,
+        index: index + 1,
+        total: selected.length,
+      };
+
+      saveOnboardingState(configPath, {
+        selectedProviders: selected,
+        nextIndex: index,
+        results: setupResults,
+      });
       console.log(`Starting guided setup for ${label} (${providerId})...`);
       try {
         const result = await runGuidedSetupForProvider({
@@ -552,9 +724,20 @@ async function cmdInit(parsed) {
           showGuide: shouldShowBuiltInGuide(providerId),
           showConfigPrompts: shouldShowBuiltInGuide(providerId),
           askRedoIfWorking: true,
+          progress,
         });
         if (result.skipped) {
           console.log(`Skipped setup for provider ${providerId}.`);
+          setupResults.push({
+            providerId,
+            status: 'skipped',
+            detail: result.reason || 'skipped',
+          });
+          saveOnboardingState(configPath, {
+            selectedProviders: selected,
+            nextIndex: index + 1,
+            results: setupResults,
+          });
           continue;
         }
         if (plugin?.supportsAuth) {
@@ -562,22 +745,116 @@ async function cmdInit(parsed) {
         } else {
           console.log(`Setup finished for provider ${providerId}.`);
         }
+        setupResults.push({
+          providerId,
+          status: 'configured',
+          detail: result.preflightDetail || null,
+        });
       } catch (err) {
         if (isUserAbortError(err)) {
+          saveOnboardingState(configPath, {
+            selectedProviders: selected,
+            nextIndex: index,
+            results: setupResults,
+          });
           console.warn(err.message);
           return 130;
         }
-        failures.push({ providerId, err });
         console.warn(`WARNING: setup failed for ${providerId}: ${err?.message || String(err)}`);
+        setupResults.push({
+          providerId,
+          status: 'failed',
+          detail: err?.message || String(err),
+        });
       }
+      saveOnboardingState(configPath, {
+        selectedProviders: selected,
+        nextIndex: index + 1,
+        results: setupResults,
+      });
+    }
+
+    clearOnboardingState(configPath);
+
+    const resultByProvider = new Map();
+    for (const row of setupResults) {
+      if (!row?.providerId) {
+        continue;
+      }
+      resultByProvider.set(row.providerId, row);
+    }
+
+    const configured = [];
+    const skipped = [];
+    const failed = [];
+    for (const [providerId, row] of resultByProvider.entries()) {
+      if (row.status === 'configured') {
+        configured.push(providerId);
+        continue;
+      }
+      if (row.status === 'skipped') {
+        skipped.push(providerId);
+        continue;
+      }
+      if (row.status === 'failed') {
+        failed.push({
+          providerId,
+          error: row.detail || 'Unknown error',
+        });
+      }
+    }
+
+    let smoke = null;
+    if (configured.length && await promptSmokeTestChoice(configured)) {
+      context = await loadContext(configPath);
+      const smokeResults = [];
+      for (const providerId of configured) {
+        const provider = context.providers.get(providerId);
+        if (!provider) {
+          smokeResults.push({
+            providerId,
+            ok: false,
+            error: 'Provider not discovered',
+          });
+          continue;
+        }
+        try {
+          await provider.sync(authDb, context.loadedConfig.data, context.helpers, {
+            configPath,
+            dbPath,
+          });
+          smokeResults.push({
+            providerId,
+            ok: true,
+          });
+        } catch (err) {
+          smokeResults.push({
+            providerId,
+            ok: false,
+            error: err?.message || String(err),
+          });
+        }
+      }
+      smoke = { results: smokeResults };
+    }
+
+    printOnboardingCompletionReport({
+      configured,
+      skipped,
+      failed,
+    }, smoke);
+
+    if (failed.length) {
+      console.warn(`Init completed with warnings; ${failed.length} provider setup flow(s) failed.`);
+      return 1;
+    }
+
+    if (smoke && smoke.results.some((row) => !row.ok)) {
+      console.warn('Init completed, but one or more smoke sync checks failed.');
+      return 1;
     }
   } finally {
     authDb.close();
-  }
-
-  if (failures.length) {
-    console.warn(`Init completed with warnings; ${failures.length} provider setup flow(s) failed.`);
-    return 1;
   }
 
   return 0;
