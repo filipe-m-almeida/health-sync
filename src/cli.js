@@ -14,6 +14,7 @@ import { setRequestJsonVerbose } from './util.js';
 import {
   authProviderDisplayName,
   hasInteractiveAuthUi,
+  isUserAbortError,
   promptAuthProviderChecklist,
   runProviderPreAuthWizard,
   shouldShowBuiltInGuide,
@@ -276,7 +277,7 @@ function configSectionForProvider(configData, providerId) {
   return {};
 }
 
-function requireAuthPlugin(context, providerId) {
+function requireProvider(context, providerId) {
   const plugin = context.providers.get(providerId);
   if (!plugin) {
     const known = context.providers.size
@@ -288,6 +289,11 @@ function requireAuthPlugin(context, providerId) {
       + 'Use `health-sync providers` to inspect discovery/config status.',
     );
   }
+  return plugin;
+}
+
+function requireAuthPlugin(context, providerId) {
+  const plugin = requireProvider(context, providerId);
   if (!plugin.supportsAuth) {
     throw new Error(`Provider \`${providerId}\` does not support auth.`);
   }
@@ -341,6 +347,51 @@ async function runAuthForProvider({
   });
 
   return { skipped: false };
+}
+
+async function runConfigOnlySetupForProvider({
+  context,
+  providerId,
+  configPath,
+  db,
+  showGuide,
+  showConfigPrompts,
+  askRedoIfWorking,
+}) {
+  requireProvider(context, providerId);
+
+  scaffoldProviderConfig(configPath, providerId);
+  const loadedConfig = loadConfig(configPath);
+
+  const wizard = await runProviderPreAuthWizard(
+    providerId,
+    configSectionForProvider(loadedConfig.data, providerId),
+    db,
+    {
+      showGuide,
+      showConfigPrompts,
+      askRedoIfWorking,
+    },
+  );
+
+  if (!wizard.proceed) {
+    return { skipped: true };
+  }
+
+  const updates = {
+    enabled: true,
+    ...(wizard.updates || {}),
+  };
+  updateProviderConfigValues(configPath, providerId, updates);
+  return { skipped: false };
+}
+
+async function runGuidedSetupForProvider(options) {
+  const plugin = requireProvider(options.context, options.providerId);
+  if (plugin.supportsAuth) {
+    return runAuthForProvider(options);
+  }
+  return runConfigOnlySetupForProvider(options);
 }
 
 function usage() {
@@ -398,25 +449,27 @@ async function cmdInit(parsed) {
     .sort()
     .map((providerId) => {
       const plugin = context.providers.get(providerId);
+      const builtInGuide = shouldShowBuiltInGuide(providerId);
       return {
         id: providerId,
         supportsAuth: Boolean(plugin?.supportsAuth),
+        supportsInteractiveSetup: Boolean(plugin?.supportsAuth || builtInGuide),
         description: plugin?.description || null,
       };
     });
 
   if (!providerRows.length) {
-    console.log('No providers discovered; skipping interactive auth setup.');
+    console.log('No providers discovered; skipping interactive setup.');
     return 0;
   }
-  if (!providerRows.some((provider) => provider.supportsAuth)) {
-    console.log('No auth-capable providers discovered; skipping interactive auth setup.');
+  if (!providerRows.some((provider) => provider.supportsInteractiveSetup)) {
+    console.log('No setup-capable providers discovered; skipping interactive setup.');
     return 0;
   }
 
   const selected = await promptAuthProviderChecklist(providerRows);
   if (!selected.length) {
-    console.log('Skipped provider auth setup during init.');
+    console.log('Skipped provider setup during init.');
     return 0;
   }
 
@@ -425,10 +478,11 @@ async function cmdInit(parsed) {
 
   try {
     for (const providerId of selected) {
+      const plugin = context.providers.get(providerId);
       const label = authProviderDisplayName(providerId);
       console.log(`Starting guided setup for ${label} (${providerId})...`);
       try {
-        const result = await runAuthForProvider({
+        const result = await runGuidedSetupForProvider({
           context,
           providerId,
           configPath,
@@ -441,11 +495,19 @@ async function cmdInit(parsed) {
           askRedoIfWorking: true,
         });
         if (result.skipped) {
-          console.log(`Skipped auth for provider ${providerId}.`);
+          console.log(`Skipped setup for provider ${providerId}.`);
           continue;
         }
-        console.log(`Auth finished for provider ${providerId}.`);
+        if (plugin?.supportsAuth) {
+          console.log(`Auth finished for provider ${providerId}.`);
+        } else {
+          console.log(`Setup finished for provider ${providerId}.`);
+        }
       } catch (err) {
+        if (isUserAbortError(err)) {
+          console.warn(err.message);
+          return 130;
+        }
         failures.push({ providerId, err });
         console.warn(`WARNING: setup failed for ${providerId}: ${err?.message || String(err)}`);
       }
@@ -703,6 +765,9 @@ export async function main(argv = process.argv.slice(2)) {
     return 1;
   } catch (err) {
     console.error(err?.message || String(err));
+    if (isUserAbortError(err)) {
+      return 130;
+    }
     return 1;
   }
 }

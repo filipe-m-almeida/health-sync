@@ -42,12 +42,28 @@ const SELECT_THEME = {
 const PROVIDER_NAMES = {
   oura: 'Oura',
   withings: 'Withings',
+  hevy: 'Hevy',
   strava: 'Strava',
   whoop: 'WHOOP',
   eightsleep: 'Eight Sleep',
 };
 
 const SECRET_PLACEHOLDER = '***';
+const ABORT_SENTINEL = Symbol('health-sync-abort');
+
+export class UserAbortError extends Error {
+  constructor(message = 'Setup aborted by user.') {
+    super(message);
+    this.name = 'UserAbortError';
+    this.code = 'USER_ABORT';
+  }
+}
+
+export function isUserAbortError(err) {
+  return err instanceof UserAbortError
+    || err?.code === 'USER_ABORT'
+    || err?.name === 'UserAbortError';
+}
 
 function graphemes(value) {
   return Array.from(String(value || ''));
@@ -60,6 +76,7 @@ class MaskedInput {
     this.focused = false;
     this.onSubmit = null;
     this.onEscape = null;
+    this.onAbort = null;
   }
 
   getValue() {
@@ -72,7 +89,14 @@ class MaskedInput {
   }
 
   handleInput(data) {
-    if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl('c'))) {
+    if (matchesKey(data, Key.ctrl('c'))) {
+      if (typeof this.onAbort === 'function') {
+        this.onAbort();
+      }
+      return;
+    }
+
+    if (matchesKey(data, Key.escape)) {
       if (typeof this.onEscape === 'function') {
         this.onEscape();
       }
@@ -148,9 +172,9 @@ class MaskedInput {
       return [prompt];
     }
 
-    const masked = '*'.repeat(graphemes(this.value).length);
+    const masked = graphemes(this.value).length > 0 ? SECRET_PLACEHOLDER : '';
     let visible = masked;
-    let cursorDisplay = this.cursor;
+    let cursorDisplay = Math.min(this.cursor, graphemes(masked).length);
 
     if (visible.length > Math.max(1, availableWidth - 1)) {
       const window = Math.max(1, availableWidth - 1);
@@ -189,9 +213,14 @@ function defaultListDescription(provider) {
   if (provider.description) {
     return String(provider.description);
   }
+  if (provider.supportsInteractiveSetup) {
+    return provider.supportsAuth
+      ? 'Supports authentication'
+      : 'Guided setup available';
+  }
   return provider.supportsAuth
     ? 'Supports authentication'
-    : 'No auth flow available';
+    : 'No interactive setup available';
 }
 
 function providerName(providerId) {
@@ -253,6 +282,14 @@ function eightsleepApiBase(cfg) {
   return raw.endsWith('/') ? raw.slice(0, -1) : raw;
 }
 
+function hevyApiBase(cfg) {
+  const raw = String(cfg?.base_url || 'https://api.hevyapp.com').trim();
+  if (!raw) {
+    return 'https://api.hevyapp.com';
+  }
+  return raw.endsWith('/') ? raw.slice(0, -1) : raw;
+}
+
 function stravaOAuthConfigured(cfg) {
   return hasText(cfg?.client_id)
     && hasText(cfg?.client_secret)
@@ -269,6 +306,9 @@ function providerConfigReady(providerId, cfg) {
     return hasText(cfg?.client_id)
       && hasText(cfg?.client_secret)
       && hasText(cfg?.redirect_uri);
+  }
+  if (providerId === 'hevy') {
+    return hasText(cfg?.api_key);
   }
   if (providerId === 'strava') {
     return hasText(cfg?.access_token) || stravaOAuthConfigured(cfg);
@@ -294,9 +334,9 @@ function tokenForCheck(providerId, cfg, db) {
 }
 
 async function providerTokenHealthCheck(providerId, cfg, token) {
-  const headers = {
-    Authorization: `Bearer ${token}`,
-  };
+  const headers = providerId === 'hevy'
+    ? { 'api-key': token }
+    : { Authorization: `Bearer ${token}` };
 
   if (providerId === 'oura') {
     await requestJson('https://api.ouraring.com/v2/usercollection/personal_info', { headers });
@@ -315,6 +355,17 @@ async function providerTokenHealthCheck(providerId, cfg, token) {
       throw new Error(`Withings returned status=${payload?.status ?? 'unknown'}`);
     }
     return 'Token accepted by Withings device endpoint.';
+  }
+
+  if (providerId === 'hevy') {
+    await requestJson(`${hevyApiBase(cfg)}/v1/workouts`, {
+      headers,
+      params: {
+        page: 1,
+        pageSize: 1,
+      },
+    });
+    return 'API key accepted by Hevy workouts endpoint.';
   }
 
   if (providerId === 'strava') {
@@ -337,6 +388,31 @@ async function providerTokenHealthCheck(providerId, cfg, token) {
 
 export async function providerAuthStatus(providerId, cfg, db) {
   const configured = providerConfigReady(providerId, cfg);
+
+  if (providerId === 'hevy') {
+    if (!configured) {
+      return {
+        configured: false,
+        working: false,
+        detail: 'Required config values are still missing.',
+      };
+    }
+    try {
+      const detail = await providerTokenHealthCheck(providerId, cfg, String(cfg.api_key).trim());
+      return {
+        configured: true,
+        working: true,
+        detail,
+      };
+    } catch (err) {
+      return {
+        configured: true,
+        working: false,
+        detail: err?.message || String(err),
+      };
+    }
+  }
+
   const token = tokenForCheck(providerId, cfg, db);
 
   if (!configured || !token) {
@@ -390,6 +466,7 @@ function setupGuide(providerId, cfg) {
         client_secret: 'From Oura app settings -> OAuth credentials -> Client Secret.',
         redirect_uri: `Must match the Oura app redirect exactly. Recommended: ${redirect.uri || 'http://localhost:8080/callback'}`,
       },
+      requiresAuth: true,
     };
   }
 
@@ -414,6 +491,37 @@ function setupGuide(providerId, cfg) {
         client_secret: 'Withings dashboard -> your app -> Client Secret.',
         redirect_uri: `Use the same callback URL in both Withings and health-sync: ${redirect.uri || 'http://127.0.0.1:8485/callback'}`,
       },
+      requiresAuth: true,
+    };
+  }
+
+  if (providerId === 'hevy') {
+    return {
+      title: 'Hevy onboarding',
+      lines: [
+        'We will now connect Hevy to Health Sync so your workouts can sync.',
+        'Open https://hevy.com/settings?developer in your browser.',
+        '1. Sign in to your Hevy account.',
+        '2. Create or copy your API key from the Developer section (Hevy Pro required).',
+        '3. Return here and paste that key on the next screen.',
+      ],
+      fields: [
+        { key: 'api_key', label: 'API Key', required: true, secret: true },
+      ],
+      fieldHelp: {
+        api_key: 'Hevy Settings -> Developer -> API key (https://hevy.com/settings?developer).',
+      },
+      fieldPrompts: {
+        api_key: [
+          'Insert your Hevy API key.',
+        ],
+      },
+      requiresAuth: false,
+      finalLines: [
+        '- We will save this API key in [hevy].api_key.',
+        '- Hevy does not use an OAuth browser flow.',
+        '- After this, Hevy is ready for sync.',
+      ],
     };
   }
 
@@ -437,6 +545,7 @@ function setupGuide(providerId, cfg) {
         redirect_uri: `Must match your Strava app callback settings. Recommended: ${redirect.uri || 'http://127.0.0.1:8486/callback'}`,
         access_token: 'Use this only for static token mode. OAuth mode is simpler for long-term refresh.',
       },
+      requiresAuth: true,
     };
   }
 
@@ -463,6 +572,7 @@ function setupGuide(providerId, cfg) {
         redirect_uri: `Must match WHOOP app redirect URI. Recommended: ${redirect.uri || 'http://127.0.0.1:8487/callback'}`,
         scopes: 'Keep default scopes and ensure `offline` is present for token refresh.',
       },
+      requiresAuth: true,
     };
   }
 
@@ -470,20 +580,29 @@ function setupGuide(providerId, cfg) {
     return {
       title: 'Eight Sleep onboarding',
       lines: [
-        '1. No developer app setup is required for Eight Sleep.',
-        '2. Use your Eight Sleep account login (username/email + password).',
-        '3. We will exchange credentials for an access token and save it securely.',
-        `4. Auth URL used: ${cfg?.auth_url || 'https://auth-api.8slp.net/v1/tokens'}`,
-        `5. API base used: ${eightsleepApiBase(cfg)}`,
+        'We will now connect your Eight Sleep account to Health Sync.',
+        'No developer app setup is required for this provider.',
+        '1. On the next screen, enter your Eight Sleep username or email.',
+        '2. Then enter your Eight Sleep password.',
+        '3. We will exchange those credentials for an access token and store it securely.',
       ],
       fields: [
         { key: 'email', label: 'Username or Email', required: true },
         { key: 'password', label: 'Password', required: true, secret: true },
       ],
       fieldHelp: {
-        email: 'Your Eight Sleep login username/email.',
-        password: 'Your Eight Sleep account password. It will be shown as *** while you type.',
+        email: 'Use the same login username/email you use in the Eight Sleep app.',
+        password: 'Use your Eight Sleep account password. It will be shown as *** while you type.',
       },
+      fieldPrompts: {
+        email: [
+          'Insert your Eight Sleep username or email.',
+        ],
+        password: [
+          'Type your Eight Sleep password.',
+        ],
+      },
+      requiresAuth: true,
     };
   }
 
@@ -496,6 +615,7 @@ function setupGuide(providerId, cfg) {
     ],
     fields: [],
     fieldHelp: {},
+    requiresAuth: true,
   };
 }
 
@@ -505,12 +625,17 @@ async function runTuiPrompt(setupFn) {
 
   return await new Promise((resolve, reject) => {
     let settled = false;
+    let removeAbortListener = null;
 
     const finish = (value) => {
       if (settled) {
         return;
       }
       settled = true;
+      if (typeof removeAbortListener === 'function') {
+        removeAbortListener();
+        removeAbortListener = null;
+      }
       try {
         tui.stop();
       } catch {
@@ -520,11 +645,22 @@ async function runTuiPrompt(setupFn) {
     };
 
     try {
+      removeAbortListener = tui.addInputListener((data) => {
+        if (matchesKey(data, Key.ctrl('c'))) {
+          finish(ABORT_SENTINEL);
+          return { consume: true };
+        }
+        return undefined;
+      });
       setupFn(tui, finish);
       tui.start();
     } catch (err) {
       if (!settled) {
         settled = true;
+        if (typeof removeAbortListener === 'function') {
+          removeAbortListener();
+          removeAbortListener = null;
+        }
         try {
           tui.stop();
         } catch {
@@ -558,8 +694,8 @@ function createScreenText(title, lines = []) {
   }
   out.push(
     baseChalk.level > 0
-      ? colors.control('Use Up/Down to move, Enter to continue, Esc to cancel.')
-      : 'Use Up/Down to move, Enter to continue, Esc to cancel.',
+      ? colors.control('Use Up/Down to move, Enter to continue, Esc to cancel this screen, Ctrl+C to abort setup.')
+      : 'Use Up/Down to move, Enter to continue, Esc to cancel this screen, Ctrl+C to abort setup.',
   );
   return out.join('\n');
 }
@@ -569,7 +705,7 @@ async function promptSelect({ title, lines = [], items }) {
     return null;
   }
 
-  return await runTuiPrompt((tui, finish) => {
+  const value = await runTuiPrompt((tui, finish) => {
     const root = new Container();
     const heading = new Text(createScreenText(title, lines), 0, 0);
     const list = new SelectList(items, Math.min(12, Math.max(3, items.length)), SELECT_THEME);
@@ -584,6 +720,11 @@ async function promptSelect({ title, lines = [], items }) {
     tui.addChild(root);
     tui.setFocus(list);
   });
+
+  if (value === ABORT_SENTINEL) {
+    throw new UserAbortError();
+  }
+  return value;
 }
 
 async function promptInput({
@@ -598,7 +739,7 @@ async function promptInput({
     return null;
   }
 
-  return await runTuiPrompt((tui, finish) => {
+  const value = await runTuiPrompt((tui, finish) => {
     const root = new Container();
     const heading = new Text(createScreenText(title, lines), 0, 0);
     const input = secret ? new MaskedInput() : new Input();
@@ -621,6 +762,9 @@ async function promptInput({
     };
 
     input.onEscape = () => finish(null);
+    if (secret) {
+      input.onAbort = () => finish(ABORT_SENTINEL);
+    }
 
     root.addChild(heading);
     root.addChild(new Spacer(1));
@@ -629,6 +773,11 @@ async function promptInput({
     tui.addChild(root);
     tui.setFocus(input);
   });
+
+  if (value === ABORT_SENTINEL) {
+    throw new UserAbortError();
+  }
+  return value;
 }
 
 async function promptYesNo(title, lines, yesLabel = 'Yes', noLabel = 'No') {
@@ -665,12 +814,21 @@ function fieldPromptLines(providerId, field, currentLabel, guide = null, step = 
   if (step !== null && total !== null) {
     out.push(`Step ${step} of ${total}`);
   }
-  out.push(`Field: [${providerId}].${field.key}`);
-  out.push(`Current value: ${currentLabel}`);
-  if (guide?.fieldHelp?.[field.key]) {
-    out.push(`Where to find it: ${guide.fieldHelp[field.key]}`);
+
+  const customPrompts = Array.isArray(guide?.fieldPrompts?.[field.key])
+    ? guide.fieldPrompts[field.key]
+    : null;
+  if (customPrompts?.length) {
+    out.push(...customPrompts);
+  } else {
+    out.push(`Set ${field.label} for ${providerName(providerId)}.`);
   }
-  out.push('Press Enter to keep the current value when available.');
+
+  if (guide?.fieldHelp?.[field.key]) {
+    out.push(`How to find it: ${guide.fieldHelp[field.key]}`);
+  }
+  out.push(`Current saved value: ${currentLabel}`);
+  out.push('Press Enter to keep the current value if you do not want to change it.');
   return out;
 }
 
@@ -843,7 +1001,7 @@ export async function promptAuthProviderChecklist(providerRows) {
 
   const selectableIds = new Set(
     providerRows
-      .filter((provider) => provider.supportsAuth)
+      .filter((provider) => Boolean(provider.supportsInteractiveSetup))
       .map((provider) => provider.id),
   );
 
@@ -851,7 +1009,7 @@ export async function promptAuthProviderChecklist(providerRows) {
     return [];
   }
 
-  return await runTuiPrompt((tui, finish) => {
+  const selection = await runTuiPrompt((tui, finish) => {
     const selected = new Set();
     let warningLine = '';
 
@@ -863,7 +1021,7 @@ export async function promptAuthProviderChecklist(providerRows) {
         label: '',
         description: selectable
           ? defaultListDescription(provider)
-          : `${defaultListDescription(provider)} (auth not supported)`,
+          : `${defaultListDescription(provider)} (interactive setup unavailable)`,
       };
     });
     const list = new SelectList(listItems, Math.min(12, Math.max(3, listItems.length)), SELECT_THEME);
@@ -932,7 +1090,7 @@ export async function promptAuthProviderChecklist(providerRows) {
         return { consume: true };
       }
 
-      if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl('c'))) {
+      if (matchesKey(data, Key.escape)) {
         removeListener();
         finish([]);
         return { consume: true };
@@ -941,6 +1099,11 @@ export async function promptAuthProviderChecklist(providerRows) {
       return undefined;
     });
   });
+
+  if (selection === ABORT_SENTINEL) {
+    throw new UserAbortError();
+  }
+  return selection;
 }
 
 export async function runProviderPreAuthWizard(providerId, cfg, db, options = {}) {
@@ -1007,14 +1170,22 @@ export async function runProviderPreAuthWizard(providerId, cfg, db, options = {}
   }
 
   if (showGuide && interactiveTerminalAvailable()) {
+    const requiresAuth = guide.requiresAuth !== false;
     const startAuth = await promptYesNo(
-      `${providerName(providerId)}: ready to connect`,
-      [
-        '- Next, health-sync will start the auth flow for this provider.',
-        '- Keep this terminal open while you finish consent in the browser.',
-        '- If redirected callback fails, paste the callback URL/code back into this terminal.',
-      ],
-      'Start auth now',
+      requiresAuth ? `${providerName(providerId)}: ready to connect` : `${providerName(providerId)}: finish setup`,
+      requiresAuth
+        ? [
+          '- Next, health-sync will start the auth flow for this provider.',
+          '- Keep this terminal open while you finish consent in the browser.',
+          '- If redirected callback fails, paste the callback URL/code back into this terminal.',
+        ]
+        : (Array.isArray(guide.finalLines) && guide.finalLines.length
+          ? guide.finalLines
+          : [
+            '- We will save these settings to health-sync.toml.',
+            '- No browser auth step is required for this provider.',
+          ]),
+      requiresAuth ? 'Start auth now' : 'Save setup',
       'Skip for now',
     );
 
