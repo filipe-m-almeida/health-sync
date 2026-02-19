@@ -527,7 +527,7 @@ export class HealthSyncDb {
     this.setSyncState(provider, resource, { watermark: normalized, extra });
   }
 
-  transaction(fn) {
+  async transaction(fn) {
     const depth = this._transactionDepth;
     const savepointName = `sp_${depth + 1}`;
     if (depth === 0) {
@@ -538,7 +538,7 @@ export class HealthSyncDb {
     this._transactionDepth += 1;
 
     try {
-      const result = fn();
+      const result = await fn();
       this._transactionDepth -= 1;
       if (depth === 0) {
         this.conn.exec('COMMIT');

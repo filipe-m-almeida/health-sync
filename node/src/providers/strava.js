@@ -55,15 +55,15 @@ async function refreshTokenIfNeeded(db, cfgSection) {
   if (!token) {
     throw new Error('Strava token not found. Run `health-sync auth strava` or set [strava].access_token.');
   }
+  if (!token.refreshToken || !token.expiresAt) {
+    return token.accessToken;
+  }
   if (!tokenExpiredSoon(token.expiresAt)) {
     return token.accessToken;
   }
 
   if (!cfgSection.client_id || !cfgSection.client_secret) {
     throw new Error('Strava token expired and missing [strava].client_id/client_secret for refresh.');
-  }
-  if (!token.refreshToken) {
-    throw new Error('Strava token expired and no refresh_token is available. Re-run `health-sync auth strava`.');
   }
 
   const refreshed = await requestJson(STRAVA_TOKEN_URL, {
@@ -183,83 +183,87 @@ async function stravaAuth(db, config, helpers, options = {}) {
 
 async function syncAthlete(db, token) {
   await db.syncRun('strava', 'athlete', async () => {
-    const payload = await requestJson(`${STRAVA_API_BASE}/athlete`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
+    await db.transaction(async () => {
+      const payload = await requestJson(`${STRAVA_API_BASE}/athlete`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-    const recordId = payload?.id ? String(payload.id) : 'me';
-    db.upsertRecord({
-      provider: 'strava',
-      resource: 'athlete',
-      recordId,
-      sourceUpdatedAt: utcNowIso(),
-      payload,
-    });
+      const recordId = payload?.id ? String(payload.id) : 'me';
+      db.upsertRecord({
+        provider: 'strava',
+        resource: 'athlete',
+        recordId,
+        sourceUpdatedAt: utcNowIso(),
+        payload,
+      });
 
-    db.setSyncState('strava', 'athlete', { watermark: utcNowIso() });
+      db.setSyncState('strava', 'athlete', { watermark: utcNowIso() });
+    });
   });
 }
 
 async function syncActivities(db, token, cfg) {
   await db.syncRun('strava', 'activities', async () => {
-    const pageSize = Math.max(1, Math.min(200, Number.parseInt(String(cfg.page_size ?? 100), 10) || 100));
-    const overlapSeconds = Math.max(0, Number.parseInt(String(cfg.overlap_seconds ?? 604800), 10) || 0);
+    await db.transaction(async () => {
+      const pageSize = Math.max(1, Math.min(200, Number.parseInt(String(cfg.page_size ?? 100), 10) || 100));
+      const overlapSeconds = Math.max(0, Number.parseInt(String(cfg.overlap_seconds ?? 604800), 10) || 0);
 
-    const state = db.getSyncState('strava', 'activities');
-    const existingWatermarkEpoch = state?.watermark ? toEpochSeconds(state.watermark) : null;
-    const startDateEpoch = toEpochSeconds(cfg.start_date || '2010-01-01') || 0;
+      const state = db.getSyncState('strava', 'activities');
+      const existingWatermarkEpoch = state?.watermark ? toEpochSeconds(state.watermark) : null;
+      const startDateEpoch = toEpochSeconds(cfg.start_date || '2010-01-01') || 0;
 
-    const afterEpoch = existingWatermarkEpoch === null
-      ? startDateEpoch
-      : Math.max(0, existingWatermarkEpoch - overlapSeconds);
+      const afterEpoch = existingWatermarkEpoch === null
+        ? startDateEpoch
+        : Math.max(0, existingWatermarkEpoch - overlapSeconds);
 
-    let page = 1;
-    let maxStartEpoch = existingWatermarkEpoch === null ? afterEpoch : existingWatermarkEpoch;
+      let page = 1;
+      let maxStartEpoch = existingWatermarkEpoch === null ? afterEpoch : existingWatermarkEpoch;
 
-    while (true) {
-      const batch = await requestJson(`${STRAVA_API_BASE}/athlete/activities`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        params: {
-          after: afterEpoch,
-          page,
-          per_page: pageSize,
-        },
-      });
+      while (true) {
+        const batch = await requestJson(`${STRAVA_API_BASE}/athlete/activities`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          params: {
+            after: afterEpoch,
+            page,
+            per_page: pageSize,
+          },
+        });
 
-      const activities = Array.isArray(batch) ? batch : [];
-      for (const item of activities) {
-        const recordId = item?.id ? String(item.id) : sha256Hex(JSON.stringify(item));
-        const startTime = item?.start_date || null;
-        const startEpoch = toEpochSeconds(startTime);
-        if (startEpoch !== null) {
-          maxStartEpoch = Math.max(maxStartEpoch ?? startEpoch, startEpoch);
+        const activities = Array.isArray(batch) ? batch : [];
+        for (const item of activities) {
+          const recordId = item?.id ? String(item.id) : sha256Hex(JSON.stringify(item));
+          const startTime = item?.start_date || null;
+          const startEpoch = toEpochSeconds(startTime);
+          if (startEpoch !== null) {
+            maxStartEpoch = Math.max(maxStartEpoch ?? startEpoch, startEpoch);
+          }
+          db.upsertRecord({
+            provider: 'strava',
+            resource: 'activities',
+            recordId,
+            startTime,
+            endTime: null,
+            sourceUpdatedAt: item?.updated_at || startTime,
+            payload: item,
+          });
         }
-        db.upsertRecord({
-          provider: 'strava',
-          resource: 'activities',
-          recordId,
-          startTime,
-          endTime: null,
-          sourceUpdatedAt: item?.updated_at || startTime,
-          payload: item,
+
+        if (activities.length < pageSize) {
+          break;
+        }
+        page += 1;
+      }
+
+      if (maxStartEpoch !== null) {
+        db.setSyncState('strava', 'activities', {
+          watermark: dtToIsoZ(new Date(maxStartEpoch * 1000)),
         });
       }
-
-      if (activities.length < pageSize) {
-        break;
-      }
-      page += 1;
-    }
-
-    if (maxStartEpoch !== null) {
-      db.setSyncState('strava', 'activities', {
-        watermark: dtToIsoZ(new Date(maxStartEpoch * 1000)),
-      });
-    }
+    });
   });
 }
 

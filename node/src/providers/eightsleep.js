@@ -182,120 +182,128 @@ async function eightsleepSync(db, config, helpers) {
   let meUserId = 'me';
 
   await db.syncRun('eightsleep', 'users_me', async () => {
-    mePayload = await requestJson(`${apiBase}/users/me`, { headers });
-    meUserId = String(mePayload?.user?.id || mePayload?.id || 'me');
-    const nowIso = utcNowIso();
-    db.upsertRecord({
-      provider: 'eightsleep',
-      resource: 'users_me',
-      recordId: meUserId,
-      startTime: null,
-      endTime: null,
-      sourceUpdatedAt: nowIso,
-      payload: mePayload,
-    });
-    db.setSyncState('eightsleep', 'users_me', {
-      watermark: nowIso,
+    await db.transaction(async () => {
+      mePayload = await requestJson(`${apiBase}/users/me`, { headers });
+      meUserId = String(mePayload?.user?.id || mePayload?.id || 'me');
+      const nowIso = utcNowIso();
+      db.upsertRecord({
+        provider: 'eightsleep',
+        resource: 'users_me',
+        recordId: meUserId,
+        startTime: null,
+        endTime: null,
+        sourceUpdatedAt: nowIso,
+        payload: mePayload,
+      });
+      db.setSyncState('eightsleep', 'users_me', {
+        watermark: nowIso,
+      });
     });
   });
 
   const userIds = new Set([meUserId]);
 
   await db.syncRun('eightsleep', 'devices', async () => {
-    const devices = Array.isArray(mePayload?.devices) ? mePayload.devices : [];
-    const nowIso = utcNowIso();
+    await db.transaction(async () => {
+      const devices = Array.isArray(mePayload?.devices) ? mePayload.devices : [];
+      const nowIso = utcNowIso();
 
-    for (const deviceEntry of devices) {
-      const deviceId = typeof deviceEntry === 'object' && deviceEntry !== null
-        ? deviceEntry.id || deviceEntry.deviceId
-        : deviceEntry;
-      if (!deviceId) {
-        continue;
+      for (const deviceEntry of devices) {
+        const deviceId = typeof deviceEntry === 'object' && deviceEntry !== null
+          ? deviceEntry.id || deviceEntry.deviceId
+          : deviceEntry;
+        if (!deviceId) {
+          continue;
+        }
+
+        const payload = await requestJson(`${apiBase}/devices/${encodeURIComponent(String(deviceId))}`, {
+          headers,
+        });
+
+        db.upsertRecord({
+          provider: 'eightsleep',
+          resource: 'devices',
+          recordId: String(deviceId),
+          startTime: null,
+          endTime: null,
+          sourceUpdatedAt: nowIso,
+          payload,
+        });
+
+        for (const uid of collectDeviceUserIds(payload)) {
+          userIds.add(uid);
+        }
       }
 
-      const payload = await requestJson(`${apiBase}/devices/${encodeURIComponent(String(deviceId))}`, {
-        headers,
+      db.setSyncState('eightsleep', 'devices', {
+        watermark: nowIso,
       });
-
-      db.upsertRecord({
-        provider: 'eightsleep',
-        resource: 'devices',
-        recordId: String(deviceId),
-        startTime: null,
-        endTime: null,
-        sourceUpdatedAt: nowIso,
-        payload,
-      });
-
-      for (const uid of collectDeviceUserIds(payload)) {
-        userIds.add(uid);
-      }
-    }
-
-    db.setSyncState('eightsleep', 'devices', {
-      watermark: nowIso,
     });
   });
 
   await db.syncRun('eightsleep', 'users', async () => {
-    const nowIso = utcNowIso();
-    for (const userId of userIds) {
-      const payload = await requestJson(`${apiBase}/users/${encodeURIComponent(String(userId))}`, {
-        headers,
-      });
-      db.upsertRecord({
-        provider: 'eightsleep',
-        resource: 'users',
-        recordId: String(userId),
-        startTime: null,
-        endTime: null,
-        sourceUpdatedAt: nowIso,
-        payload,
-      });
-    }
+    await db.transaction(async () => {
+      const nowIso = utcNowIso();
+      for (const userId of userIds) {
+        const payload = await requestJson(`${apiBase}/users/${encodeURIComponent(String(userId))}`, {
+          headers,
+        });
+        db.upsertRecord({
+          provider: 'eightsleep',
+          resource: 'users',
+          recordId: String(userId),
+          startTime: null,
+          endTime: null,
+          sourceUpdatedAt: nowIso,
+          payload,
+        });
+      }
 
-    db.setSyncState('eightsleep', 'users', {
-      watermark: nowIso,
+      db.setSyncState('eightsleep', 'users', {
+        watermark: nowIso,
+      });
     });
   });
 
   await db.syncRun('eightsleep', 'trends', async () => {
-    const timezone = String(cfg.timezone || 'UTC');
-    const fromDate = trendsFromDate(db, cfg);
-    const todayDate = dateToYYYYMMDD(new Date());
-    const nowIso = utcNowIso();
+    await db.transaction(async () => {
+      const timezone = String(cfg.timezone || 'UTC');
+      const fromDate = trendsFromDate(db, cfg);
+      const todayDate = dateToYYYYMMDD(new Date());
+      const nowIso = utcNowIso();
 
-    for (const userId of userIds) {
-      const payload = await requestJson(`${apiBase}/users/${encodeURIComponent(String(userId))}/trends`, {
-        headers,
-        params: {
-          tz: timezone,
-          from: fromDate,
-          to: todayDate,
-          'include-main': 'false',
-          'include-all-sessions': 'true',
-          'model-version': 'v2',
-        },
-      });
-
-      const entries = extractTrendEntries(payload);
-      for (const trend of entries) {
-        const startTime = trend?.day || trend?.presenceStart || null;
-        const sourceUpdatedAt = trend?.updatedAt || trend?.presenceStart || startTime;
-        db.upsertRecord({
-          provider: 'eightsleep',
-          resource: 'trends',
-          recordId: trendRecordId(String(userId), trend),
-          startTime,
-          endTime: trend?.presenceEnd || null,
-          sourceUpdatedAt,
-          payload: trend,
+      for (const userId of userIds) {
+        const payload = await requestJson(`${apiBase}/users/${encodeURIComponent(String(userId))}/trends`, {
+          headers,
+          params: {
+            tz: timezone,
+            from: fromDate,
+            to: todayDate,
+            'include-main': 'false',
+            'include-all-sessions': 'true',
+            'model-version': 'v2',
+          },
         });
-      }
-    }
 
-    db.setSyncState('eightsleep', 'trends', {
-      watermark: nowIso,
+        const entries = extractTrendEntries(payload);
+        for (const trend of entries) {
+          const startTime = trend?.day || trend?.presenceStart || null;
+          const sourceUpdatedAt = trend?.updatedAt || trend?.presenceStart || startTime;
+          db.upsertRecord({
+            provider: 'eightsleep',
+            resource: 'trends',
+            recordId: trendRecordId(String(userId), trend),
+            startTime,
+            endTime: trend?.presenceEnd || null,
+            sourceUpdatedAt,
+            payload: trend,
+          });
+        }
+      }
+
+      db.setSyncState('eightsleep', 'trends', {
+        watermark: nowIso,
+      });
     });
   });
 }

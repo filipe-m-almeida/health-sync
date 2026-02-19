@@ -159,15 +159,15 @@ async function withingsRefreshIfNeeded(db, cfg) {
   if (!token) {
     throw new Error('Withings token not found. Run `health-sync auth withings`.');
   }
+  if (!token.refreshToken || !token.expiresAt) {
+    return token.accessToken;
+  }
   if (!tokenExpiredSoon(token.expiresAt)) {
     return token.accessToken;
   }
 
   if (!cfg.client_id || !cfg.client_secret) {
     throw new Error('Withings credentials are missing. Run `health-sync auth withings` after setting client_id/client_secret.');
-  }
-  if (!token.refreshToken) {
-    throw new Error('Withings refresh_token is missing. Run `health-sync auth withings`.');
   }
 
   const nonce = await withingsNonce(cfg.client_id, cfg.client_secret);
@@ -323,247 +323,255 @@ function toSeriesArray(body) {
 
 async function syncMeasures(db, token, cfg) {
   await db.syncRun('withings', 'measures', async () => {
-    const overlapSeconds = Number.parseInt(String(cfg.overlap_seconds ?? 300), 10) || 300;
-    const lastupdate = watermarkEpoch(db, 'measures', overlapSeconds);
-    const meastypes = Array.isArray(cfg.meastypes) && cfg.meastypes.length ? cfg.meastypes : DEFAULT_MEASTYPES;
+    await db.transaction(async () => {
+      const overlapSeconds = Number.parseInt(String(cfg.overlap_seconds ?? 300), 10) || 300;
+      const lastupdate = watermarkEpoch(db, 'measures', overlapSeconds);
+      const meastypes = Array.isArray(cfg.meastypes) && cfg.meastypes.length ? cfg.meastypes : DEFAULT_MEASTYPES;
 
-    let offset = 0;
-    let maxWm = Math.floor(Date.now() / 1000);
+      let offset = 0;
+      let maxWm = Math.floor(Date.now() / 1000);
 
-    while (true) {
-      const data = {
-        action: 'getmeas',
-        meastype: meastypes.join(','),
-        category: '1',
-        lastupdate,
-      };
-      if (offset > 0) {
-        data.offset = offset;
-      }
+      while (true) {
+        const data = {
+          action: 'getmeas',
+          meastype: meastypes.join(','),
+          category: '1',
+          lastupdate,
+        };
+        if (offset > 0) {
+          data.offset = offset;
+        }
 
-      const j = await requestJson(WITHINGS_MEASURE, {
-        method: 'POST',
-        headers: withingsHeaders(token),
-        data,
-      });
-
-      if (j?.status !== 0) {
-        throw new Error(`Withings measures sync failed: ${JSON.stringify(j)}`);
-      }
-
-      const body = j.body || {};
-      const groups = Array.isArray(body.measuregrps) ? body.measuregrps : [];
-      for (const grp of groups) {
-        const recordId = grp?.grpid
-          ? String(grp.grpid)
-          : sha256Hex(serializeHashable(grp));
-        const startTime = toIsoFromEpoch(grp?.date);
-        const sourceUpdatedAt = toIsoFromEpoch(grp?.modified);
-
-        db.upsertRecord({
-          provider: 'withings',
-          resource: 'measures',
-          recordId,
-          startTime,
-          endTime: null,
-          sourceUpdatedAt,
-          payload: grp,
+        const j = await requestJson(WITHINGS_MEASURE, {
+          method: 'POST',
+          headers: withingsHeaders(token),
+          data,
         });
+
+        if (j?.status !== 0) {
+          throw new Error(`Withings measures sync failed: ${JSON.stringify(j)}`);
+        }
+
+        const body = j.body || {};
+        const groups = Array.isArray(body.measuregrps) ? body.measuregrps : [];
+        for (const grp of groups) {
+          const recordId = grp?.grpid
+            ? String(grp.grpid)
+            : sha256Hex(serializeHashable(grp));
+          const startTime = toIsoFromEpoch(grp?.date);
+          const sourceUpdatedAt = toIsoFromEpoch(grp?.modified);
+
+          db.upsertRecord({
+            provider: 'withings',
+            resource: 'measures',
+            recordId,
+            startTime,
+            endTime: null,
+            sourceUpdatedAt,
+            payload: grp,
+          });
+        }
+
+        const updatetime = Number.parseInt(String(body?.updatetime ?? 0), 10);
+        if (Number.isFinite(updatetime) && updatetime > 0) {
+          maxWm = Math.max(maxWm, updatetime);
+        }
+
+        if (!body?.more || body?.offset === undefined || body?.offset === null) {
+          break;
+        }
+        offset = Number.parseInt(String(body.offset), 10) || 0;
+        if (offset <= 0) {
+          break;
+        }
       }
 
-      const updatetime = Number.parseInt(String(body?.updatetime ?? 0), 10);
-      if (Number.isFinite(updatetime) && updatetime > 0) {
-        maxWm = Math.max(maxWm, updatetime);
-      }
-
-      if (!body?.more || body?.offset === undefined || body?.offset === null) {
-        break;
-      }
-      offset = Number.parseInt(String(body.offset), 10) || 0;
-      if (offset <= 0) {
-        break;
-      }
-    }
-
-    setWatermarkEpoch(db, 'measures', maxWm);
+      setWatermarkEpoch(db, 'measures', maxWm);
+    });
   });
 }
 
 async function syncActivity(db, token, cfg) {
   await db.syncRun('withings', 'activity', async () => {
-    const overlapSeconds = Number.parseInt(String(cfg.overlap_seconds ?? 300), 10) || 300;
-    const lastupdate = watermarkEpoch(db, 'activity', overlapSeconds);
+    await db.transaction(async () => {
+      const overlapSeconds = Number.parseInt(String(cfg.overlap_seconds ?? 300), 10) || 300;
+      const lastupdate = watermarkEpoch(db, 'activity', overlapSeconds);
 
-    let offset = 0;
-    const maxWm = Math.floor(Date.now() / 1000);
+      let offset = 0;
+      const maxWm = Math.floor(Date.now() / 1000);
 
-    while (true) {
-      const data = {
-        action: 'getactivity',
-        lastupdate,
-        data_fields: ACTIVITY_FIELDS.join(','),
-      };
-      if (offset > 0) {
-        data.offset = offset;
-      }
+      while (true) {
+        const data = {
+          action: 'getactivity',
+          lastupdate,
+          data_fields: ACTIVITY_FIELDS.join(','),
+        };
+        if (offset > 0) {
+          data.offset = offset;
+        }
 
-      const j = await requestJson(WITHINGS_MEASURE_V2, {
-        method: 'POST',
-        headers: withingsHeaders(token),
-        data,
-      });
-
-      if (j?.status !== 0) {
-        throw new Error(`Withings activity sync failed: ${JSON.stringify(j)}`);
-      }
-
-      const body = j.body || {};
-      const activities = toSeriesArray(body);
-      for (const act of activities) {
-        const recordId = act?.date || act?.id || sha256Hex(serializeHashable(act));
-        db.upsertRecord({
-          provider: 'withings',
-          resource: 'activity',
-          recordId: String(recordId),
-          startTime: act?.date || null,
-          endTime: null,
-          sourceUpdatedAt: null,
-          payload: act,
+        const j = await requestJson(WITHINGS_MEASURE_V2, {
+          method: 'POST',
+          headers: withingsHeaders(token),
+          data,
         });
+
+        if (j?.status !== 0) {
+          throw new Error(`Withings activity sync failed: ${JSON.stringify(j)}`);
+        }
+
+        const body = j.body || {};
+        const activities = toSeriesArray(body);
+        for (const act of activities) {
+          const recordId = act?.date || act?.id || sha256Hex(serializeHashable(act));
+          db.upsertRecord({
+            provider: 'withings',
+            resource: 'activity',
+            recordId: String(recordId),
+            startTime: act?.date || null,
+            endTime: null,
+            sourceUpdatedAt: null,
+            payload: act,
+          });
+        }
+
+        if (!body?.more || body?.offset === undefined || body?.offset === null) {
+          break;
+        }
+        offset = Number.parseInt(String(body.offset), 10) || 0;
+        if (offset <= 0) {
+          break;
+        }
       }
 
-      if (!body?.more || body?.offset === undefined || body?.offset === null) {
-        break;
-      }
-      offset = Number.parseInt(String(body.offset), 10) || 0;
-      if (offset <= 0) {
-        break;
-      }
-    }
-
-    setWatermarkEpoch(db, 'activity', maxWm);
+      setWatermarkEpoch(db, 'activity', maxWm);
+    });
   });
 }
 
 async function syncWorkouts(db, token, cfg) {
   await db.syncRun('withings', 'workouts', async () => {
-    const overlapSeconds = Number.parseInt(String(cfg.overlap_seconds ?? 300), 10) || 300;
-    const lastupdate = watermarkEpoch(db, 'workouts', overlapSeconds);
+    await db.transaction(async () => {
+      const overlapSeconds = Number.parseInt(String(cfg.overlap_seconds ?? 300), 10) || 300;
+      const lastupdate = watermarkEpoch(db, 'workouts', overlapSeconds);
 
-    let offset = 0;
-    let maxWm = Math.floor(Date.now() / 1000);
+      let offset = 0;
+      let maxWm = Math.floor(Date.now() / 1000);
 
-    while (true) {
-      const data = {
-        action: 'getworkouts',
-        lastupdate,
-        data_fields: WORKOUT_FIELDS.join(','),
-      };
-      if (offset > 0) {
-        data.offset = offset;
-      }
-
-      const j = await requestJson(WITHINGS_MEASURE_V2, {
-        method: 'POST',
-        headers: withingsHeaders(token),
-        data,
-      });
-
-      if (j?.status !== 0) {
-        throw new Error(`Withings workouts sync failed: ${JSON.stringify(j)}`);
-      }
-
-      const body = j.body || {};
-      const workouts = toSeriesArray(body);
-      for (const workout of workouts) {
-        const recordId = workout?.id || workout?.startdate || sha256Hex(serializeHashable(workout));
-        const modified = Number.parseInt(String(workout?.modified ?? 0), 10);
-        if (Number.isFinite(modified) && modified > 0) {
-          maxWm = Math.max(maxWm, modified);
+      while (true) {
+        const data = {
+          action: 'getworkouts',
+          lastupdate,
+          data_fields: WORKOUT_FIELDS.join(','),
+        };
+        if (offset > 0) {
+          data.offset = offset;
         }
 
-        db.upsertRecord({
-          provider: 'withings',
-          resource: 'workouts',
-          recordId: String(recordId),
-          startTime: toIsoFromEpoch(workout?.startdate),
-          endTime: toIsoFromEpoch(workout?.enddate),
-          sourceUpdatedAt: toIsoFromEpoch(workout?.modified),
-          payload: workout,
+        const j = await requestJson(WITHINGS_MEASURE_V2, {
+          method: 'POST',
+          headers: withingsHeaders(token),
+          data,
         });
+
+        if (j?.status !== 0) {
+          throw new Error(`Withings workouts sync failed: ${JSON.stringify(j)}`);
+        }
+
+        const body = j.body || {};
+        const workouts = toSeriesArray(body);
+        for (const workout of workouts) {
+          const recordId = workout?.id || workout?.startdate || sha256Hex(serializeHashable(workout));
+          const modified = Number.parseInt(String(workout?.modified ?? 0), 10);
+          if (Number.isFinite(modified) && modified > 0) {
+            maxWm = Math.max(maxWm, modified);
+          }
+
+          db.upsertRecord({
+            provider: 'withings',
+            resource: 'workouts',
+            recordId: String(recordId),
+            startTime: toIsoFromEpoch(workout?.startdate),
+            endTime: toIsoFromEpoch(workout?.enddate),
+            sourceUpdatedAt: toIsoFromEpoch(workout?.modified),
+            payload: workout,
+          });
+        }
+
+        if (!body?.more || body?.offset === undefined || body?.offset === null) {
+          break;
+        }
+        offset = Number.parseInt(String(body.offset), 10) || 0;
+        if (offset <= 0) {
+          break;
+        }
       }
 
-      if (!body?.more || body?.offset === undefined || body?.offset === null) {
-        break;
-      }
-      offset = Number.parseInt(String(body.offset), 10) || 0;
-      if (offset <= 0) {
-        break;
-      }
-    }
-
-    setWatermarkEpoch(db, 'workouts', maxWm);
+      setWatermarkEpoch(db, 'workouts', maxWm);
+    });
   });
 }
 
 async function syncSleepSummary(db, token, cfg) {
   await db.syncRun('withings', 'sleep_summary', async () => {
-    const overlapSeconds = Number.parseInt(String(cfg.overlap_seconds ?? 300), 10) || 300;
-    const lastupdate = watermarkEpoch(db, 'sleep_summary', overlapSeconds);
+    await db.transaction(async () => {
+      const overlapSeconds = Number.parseInt(String(cfg.overlap_seconds ?? 300), 10) || 300;
+      const lastupdate = watermarkEpoch(db, 'sleep_summary', overlapSeconds);
 
-    let offset = 0;
-    let maxWm = Math.floor(Date.now() / 1000);
+      let offset = 0;
+      let maxWm = Math.floor(Date.now() / 1000);
 
-    while (true) {
-      const data = {
-        action: 'getsummary',
-        lastupdate,
-        data_fields: SLEEP_SUMMARY_FIELDS.join(','),
-      };
-      if (offset > 0) {
-        data.offset = offset;
-      }
-
-      const j = await requestJson(WITHINGS_SLEEP_V2, {
-        method: 'POST',
-        headers: withingsHeaders(token),
-        data,
-      });
-
-      if (j?.status !== 0) {
-        throw new Error(`Withings sleep summary sync failed: ${JSON.stringify(j)}`);
-      }
-
-      const body = j.body || {};
-      const entries = toSeriesArray(body);
-      for (const summary of entries) {
-        const recordId = summary?.id || summary?.startdate || sha256Hex(serializeHashable(summary));
-        const modified = Number.parseInt(String(summary?.modified ?? 0), 10);
-        if (Number.isFinite(modified) && modified > 0) {
-          maxWm = Math.max(maxWm, modified);
+      while (true) {
+        const data = {
+          action: 'getsummary',
+          lastupdate,
+          data_fields: SLEEP_SUMMARY_FIELDS.join(','),
+        };
+        if (offset > 0) {
+          data.offset = offset;
         }
 
-        db.upsertRecord({
-          provider: 'withings',
-          resource: 'sleep_summary',
-          recordId: String(recordId),
-          startTime: toIsoFromEpoch(summary?.startdate),
-          endTime: toIsoFromEpoch(summary?.enddate),
-          sourceUpdatedAt: toIsoFromEpoch(summary?.modified),
-          payload: summary,
+        const j = await requestJson(WITHINGS_SLEEP_V2, {
+          method: 'POST',
+          headers: withingsHeaders(token),
+          data,
         });
+
+        if (j?.status !== 0) {
+          throw new Error(`Withings sleep summary sync failed: ${JSON.stringify(j)}`);
+        }
+
+        const body = j.body || {};
+        const entries = toSeriesArray(body);
+        for (const summary of entries) {
+          const recordId = summary?.id || summary?.startdate || sha256Hex(serializeHashable(summary));
+          const modified = Number.parseInt(String(summary?.modified ?? 0), 10);
+          if (Number.isFinite(modified) && modified > 0) {
+            maxWm = Math.max(maxWm, modified);
+          }
+
+          db.upsertRecord({
+            provider: 'withings',
+            resource: 'sleep_summary',
+            recordId: String(recordId),
+            startTime: toIsoFromEpoch(summary?.startdate),
+            endTime: toIsoFromEpoch(summary?.enddate),
+            sourceUpdatedAt: toIsoFromEpoch(summary?.modified),
+            payload: summary,
+          });
+        }
+
+        if (!body?.more || body?.offset === undefined || body?.offset === null) {
+          break;
+        }
+        offset = Number.parseInt(String(body.offset), 10) || 0;
+        if (offset <= 0) {
+          break;
+        }
       }
 
-      if (!body?.more || body?.offset === undefined || body?.offset === null) {
-        break;
-      }
-      offset = Number.parseInt(String(body.offset), 10) || 0;
-      if (offset <= 0) {
-        break;
-      }
-    }
-
-    setWatermarkEpoch(db, 'sleep_summary', maxWm);
+      setWatermarkEpoch(db, 'sleep_summary', maxWm);
+    });
   });
 }
 

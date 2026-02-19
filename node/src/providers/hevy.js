@@ -42,57 +42,59 @@ function eventTimestamp(event) {
 
 async function hevyInitialSync(db, cfg, apiKey) {
   await db.syncRun('hevy', 'workouts', async () => {
-    const baseUrl = String(cfg.base_url || 'https://api.hevyapp.com').replace(/\/$/, '');
-    const pageSize = clampPageSize(cfg.page_size);
+    await db.transaction(async () => {
+      const baseUrl = String(cfg.base_url || 'https://api.hevyapp.com').replace(/\/$/, '');
+      const pageSize = clampPageSize(cfg.page_size);
 
-    let page = 1;
-    let maxUpdatedEpoch = null;
+      let page = 1;
+      let maxUpdatedEpoch = null;
 
-    while (true) {
-      const response = await requestJson(`${baseUrl}/v1/workouts`, {
-        headers: hevyHeaders(apiKey),
-        params: {
-          page,
-          pageSize,
-        },
-      });
-
-      const workouts = Array.isArray(response?.workouts)
-        ? response.workouts
-        : Array.isArray(response?.data)
-          ? response.data
-          : [];
-
-      for (const workout of workouts) {
-        const shape = workoutRecordShape(workout);
-        db.upsertRecord({
-          provider: 'hevy',
-          resource: 'workouts',
-          recordId: shape.recordId,
-          startTime: shape.startTime,
-          endTime: shape.endTime,
-          sourceUpdatedAt: shape.sourceUpdatedAt,
-          payload: workout,
+      while (true) {
+        const response = await requestJson(`${baseUrl}/v1/workouts`, {
+          headers: hevyHeaders(apiKey),
+          params: {
+            page,
+            pageSize,
+          },
         });
 
-        const updatedEpoch = toEpochSeconds(shape.sourceUpdatedAt);
-        if (updatedEpoch !== null) {
-          maxUpdatedEpoch = maxUpdatedEpoch === null
-            ? updatedEpoch
-            : Math.max(maxUpdatedEpoch, updatedEpoch);
+        const workouts = Array.isArray(response?.workouts)
+          ? response.workouts
+          : Array.isArray(response?.data)
+            ? response.data
+            : [];
+
+        for (const workout of workouts) {
+          const shape = workoutRecordShape(workout);
+          db.upsertRecord({
+            provider: 'hevy',
+            resource: 'workouts',
+            recordId: shape.recordId,
+            startTime: shape.startTime,
+            endTime: shape.endTime,
+            sourceUpdatedAt: shape.sourceUpdatedAt,
+            payload: workout,
+          });
+
+          const updatedEpoch = toEpochSeconds(shape.sourceUpdatedAt);
+          if (updatedEpoch !== null) {
+            maxUpdatedEpoch = maxUpdatedEpoch === null
+              ? updatedEpoch
+              : Math.max(maxUpdatedEpoch, updatedEpoch);
+          }
         }
+
+        const pageCount = Number.parseInt(String(response?.page_count ?? response?.pageCount ?? 0), 10) || 0;
+        if (!workouts.length || pageCount <= 0 || page >= pageCount) {
+          break;
+        }
+        page += 1;
       }
 
-      const pageCount = Number.parseInt(String(response?.page_count ?? response?.pageCount ?? 0), 10) || 0;
-      if (!workouts.length || pageCount <= 0 || page >= pageCount) {
-        break;
-      }
-      page += 1;
-    }
-
-    const watermarkEpoch = maxUpdatedEpoch ?? Math.floor(Date.now() / 1000);
-    db.setSyncState('hevy', 'workouts', {
-      watermark: isoFromEpochSeconds(watermarkEpoch),
+      const watermarkEpoch = maxUpdatedEpoch ?? Math.floor(Date.now() / 1000);
+      db.setSyncState('hevy', 'workouts', {
+        watermark: isoFromEpochSeconds(watermarkEpoch),
+      });
     });
   });
 }
@@ -111,113 +113,115 @@ async function hevyDeltaSync(db, cfg, apiKey) {
 
   await db.syncRun('hevy', 'workouts', async () => {
     await db.syncRun('hevy', 'workout_events', async () => {
-      let page = 1;
-      let maxEventEpoch = watermarkEpoch;
+      await db.transaction(async () => {
+        let page = 1;
+        let maxEventEpoch = watermarkEpoch;
 
-      while (true) {
-        const response = await requestJson(`${baseUrl}/v1/workouts/events`, {
-          headers: hevyHeaders(apiKey),
-          params: {
-            page,
-            pageSize,
-            since: isoFromEpochSeconds(sinceEpoch),
-          },
-        });
+        while (true) {
+          const response = await requestJson(`${baseUrl}/v1/workouts/events`, {
+            headers: hevyHeaders(apiKey),
+            params: {
+              page,
+              pageSize,
+              since: isoFromEpochSeconds(sinceEpoch),
+            },
+          });
 
-        const events = Array.isArray(response?.events)
-          ? response.events
-          : Array.isArray(response?.data)
-            ? response.data
-            : [];
+          const events = Array.isArray(response?.events)
+            ? response.events
+            : Array.isArray(response?.data)
+              ? response.data
+              : [];
 
-        for (const event of events) {
-          const type = String(event?.type || '').toLowerCase();
-          const eventTs = eventTimestamp(event);
-          const eventEpoch = toEpochSeconds(eventTs);
-          if (eventEpoch !== null) {
-            maxEventEpoch = maxEventEpoch === null
-              ? eventEpoch
-              : Math.max(maxEventEpoch, eventEpoch);
-          }
-
-          if (type === 'updated') {
-            const workout = event?.workout && typeof event.workout === 'object'
-              ? event.workout
-              : event?.data && typeof event.data === 'object'
-                ? event.data
-                : null;
-
-            const workoutId = workout?.id || event?.workout_id || event?.id;
-            if (workout && workoutId) {
-              const shape = workoutRecordShape(workout);
-              db.upsertRecord({
-                provider: 'hevy',
-                resource: 'workouts',
-                recordId: String(workoutId),
-                startTime: shape.startTime,
-                endTime: shape.endTime,
-                sourceUpdatedAt: shape.sourceUpdatedAt,
-                payload: workout,
-              });
+          for (const event of events) {
+            const type = String(event?.type || '').toLowerCase();
+            const eventTs = eventTimestamp(event);
+            const eventEpoch = toEpochSeconds(eventTs);
+            if (eventEpoch !== null) {
+              maxEventEpoch = maxEventEpoch === null
+                ? eventEpoch
+                : Math.max(maxEventEpoch, eventEpoch);
             }
 
-            const auditId = `updated:${workoutId || 'unknown'}:${eventTs || 'na'}`;
+            if (type === 'updated') {
+              const workout = event?.workout && typeof event.workout === 'object'
+                ? event.workout
+                : event?.data && typeof event.data === 'object'
+                  ? event.data
+                  : null;
+
+              const workoutId = workout?.id || event?.workout_id || event?.id;
+              if (workout && workoutId) {
+                const shape = workoutRecordShape(workout);
+                db.upsertRecord({
+                  provider: 'hevy',
+                  resource: 'workouts',
+                  recordId: String(workoutId),
+                  startTime: shape.startTime,
+                  endTime: shape.endTime,
+                  sourceUpdatedAt: shape.sourceUpdatedAt,
+                  payload: workout,
+                });
+              }
+
+              const auditId = `updated:${workoutId || 'unknown'}:${eventTs || 'na'}`;
+              db.upsertRecord({
+                provider: 'hevy',
+                resource: 'workout_events',
+                recordId: auditId,
+                startTime: eventTs,
+                endTime: null,
+                sourceUpdatedAt: eventTs,
+                payload: event,
+              });
+              continue;
+            }
+
+            if (type === 'deleted') {
+              const workoutId = event?.workout_id || event?.id || null;
+              if (workoutId) {
+                db.deleteRecord('hevy', 'workouts', String(workoutId));
+              }
+
+              const deletedTs = event?.deleted_at || eventTs;
+              const auditId = `deleted:${workoutId || 'unknown'}:${deletedTs || 'na'}`;
+              db.upsertRecord({
+                provider: 'hevy',
+                resource: 'workout_events',
+                recordId: auditId,
+                startTime: deletedTs,
+                endTime: null,
+                sourceUpdatedAt: deletedTs,
+                payload: event,
+              });
+              continue;
+            }
+
+            const unknownId = `unknown:${sha256Hex(JSON.stringify(event))}`;
             db.upsertRecord({
               provider: 'hevy',
               resource: 'workout_events',
-              recordId: auditId,
+              recordId: unknownId,
               startTime: eventTs,
               endTime: null,
               sourceUpdatedAt: eventTs,
               payload: event,
             });
-            continue;
           }
 
-          if (type === 'deleted') {
-            const workoutId = event?.workout_id || event?.id || null;
-            if (workoutId) {
-              db.deleteRecord('hevy', 'workouts', String(workoutId));
-            }
-
-            const deletedTs = event?.deleted_at || eventTs;
-            const auditId = `deleted:${workoutId || 'unknown'}:${deletedTs || 'na'}`;
-            db.upsertRecord({
-              provider: 'hevy',
-              resource: 'workout_events',
-              recordId: auditId,
-              startTime: deletedTs,
-              endTime: null,
-              sourceUpdatedAt: deletedTs,
-              payload: event,
-            });
-            continue;
+          const pageCount = Number.parseInt(String(response?.page_count ?? response?.pageCount ?? 0), 10) || 0;
+          if (!events.length || pageCount <= 0 || page >= pageCount) {
+            break;
           }
+          page += 1;
+        }
 
-          const unknownId = `unknown:${sha256Hex(JSON.stringify(event))}`;
-          db.upsertRecord({
-            provider: 'hevy',
-            resource: 'workout_events',
-            recordId: unknownId,
-            startTime: eventTs,
-            endTime: null,
-            sourceUpdatedAt: eventTs,
-            payload: event,
+        if (maxEventEpoch !== null) {
+          db.setSyncState('hevy', 'workouts', {
+            watermark: isoFromEpochSeconds(maxEventEpoch),
           });
         }
-
-        const pageCount = Number.parseInt(String(response?.page_count ?? response?.pageCount ?? 0), 10) || 0;
-        if (!events.length || pageCount <= 0 || page >= pageCount) {
-          break;
-        }
-        page += 1;
-      }
-
-      if (maxEventEpoch !== null) {
-        db.setSyncState('hevy', 'workouts', {
-          watermark: isoFromEpochSeconds(maxEventEpoch),
-        });
-      }
+      });
     });
   });
 }

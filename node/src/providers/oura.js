@@ -362,101 +362,107 @@ function startDateForResource(db, cfg, resource) {
 
 async function syncPersonalInfo(db, token) {
   await db.syncRun('oura', 'personal_info', async () => {
-    const payload = await requestJson(`${OURA_BASE}/v2/usercollection/personal_info`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-    db.upsertRecord({
-      provider: 'oura',
-      resource: 'personal_info',
-      recordId: 'me',
-      startTime: null,
-      endTime: null,
-      sourceUpdatedAt: null,
-      payload,
-    });
+    await db.transaction(async () => {
+      const payload = await requestJson(`${OURA_BASE}/v2/usercollection/personal_info`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      db.upsertRecord({
+        provider: 'oura',
+        resource: 'personal_info',
+        recordId: 'me',
+        startTime: null,
+        endTime: null,
+        sourceUpdatedAt: null,
+        payload,
+      });
 
-    db.setSyncState('oura', 'personal_info', {
-      watermark: utcNowIso(),
+      db.setSyncState('oura', 'personal_info', {
+        watermark: utcNowIso(),
+      });
     });
   });
 }
 
 async function syncDateWindowResource(db, token, cfg, resource, endpoint) {
   await db.syncRun('oura', resource, async () => {
-    const startDate = startDateForResource(db, cfg, resource);
-    let endDate = ymdUtc(new Date());
-    if (resource === 'sleep') {
-      endDate = ymdUtc(addDays(new Date(), 1));
-    }
+    await db.transaction(async () => {
+      const startDate = startDateForResource(db, cfg, resource);
+      let endDate = ymdUtc(new Date());
+      if (resource === 'sleep') {
+        endDate = ymdUtc(addDays(new Date(), 1));
+      }
 
-    const entries = await ouraFetchAll(endpoint, token, {
-      start_date: startDate,
-      end_date: endDate,
-    });
-
-    for (const item of entries) {
-      db.upsertRecord({
-        provider: 'oura',
-        resource,
-        recordId: dateWindowRecordId(item),
-        startTime: dateWindowStart(item),
-        endTime: dateWindowEnd(item),
-        sourceUpdatedAt: dateWindowUpdated(item),
-        payload: item,
+      const entries = await ouraFetchAll(endpoint, token, {
+        start_date: startDate,
+        end_date: endDate,
       });
-    }
 
-    db.setSyncState('oura', resource, {
-      watermark: utcNowIso(),
+      for (const item of entries) {
+        db.upsertRecord({
+          provider: 'oura',
+          resource,
+          recordId: dateWindowRecordId(item),
+          startTime: dateWindowStart(item),
+          endTime: dateWindowEnd(item),
+          sourceUpdatedAt: dateWindowUpdated(item),
+          payload: item,
+        });
+      }
+
+      db.setSyncState('oura', resource, {
+        watermark: utcNowIso(),
+      });
     });
   });
 }
 
 async function syncHeartrate(db, token, cfg) {
   await db.syncRun('oura', 'heartrate', async () => {
-    const now = new Date();
-    const chunkDays = 30;
+    await db.transaction(async () => {
+      const now = new Date();
+      const chunkDays = 30;
 
-    const maxStart = db.getMaxRecordStartTime('oura', 'heartrate');
-    let cursor = maxStart ? new Date(maxStart) : new Date(`${cfg.start_date || '2010-01-01'}T00:00:00Z`);
-    if (Number.isNaN(cursor.getTime())) {
-      cursor = new Date('2010-01-01T00:00:00Z');
-    }
-    cursor = addDays(cursor, -1);
-
-    while (cursor < now) {
-      const chunkEnd = new Date(cursor.getTime());
-      chunkEnd.setUTCDate(chunkEnd.getUTCDate() + chunkDays);
-      if (chunkEnd > now) {
-        chunkEnd.setTime(now.getTime());
+      const maxStart = db.getMaxRecordStartTime('oura', 'heartrate');
+      let cursor = maxStart ? new Date(maxStart) : new Date(`${cfg.start_date || '2010-01-01'}T00:00:00Z`);
+      if (Number.isNaN(cursor.getTime())) {
+        cursor = new Date('2010-01-01T00:00:00Z');
       }
+      cursor = addDays(cursor, -1);
 
-      const entries = await ouraFetchAll('/v2/usercollection/heartrate', token, {
-        start_datetime: dtToIsoZ(cursor),
-        end_datetime: dtToIsoZ(chunkEnd),
-      });
+      while (cursor < now) {
+        const chunkEnd = new Date(cursor.getTime());
+        chunkEnd.setUTCDate(chunkEnd.getUTCDate() + chunkDays);
+        if (chunkEnd > now) {
+          chunkEnd.setTime(now.getTime());
+        }
 
-      for (const item of entries) {
-        const ts = heartrateTimestamp(item);
-        db.upsertRecord({
-          provider: 'oura',
-          resource: 'heartrate',
-          recordId: heartrateRecordId(item),
-          startTime: ts,
-          endTime: null,
-          sourceUpdatedAt: ts,
-          payload: item,
+        const entries = await ouraFetchAll('/v2/usercollection/heartrate', token, {
+          start_datetime: dtToIsoZ(cursor),
+          end_datetime: dtToIsoZ(chunkEnd),
         });
+
+        for (const item of entries) {
+          const ts = heartrateTimestamp(item);
+          db.upsertRecord({
+            provider: 'oura',
+            resource: 'heartrate',
+            recordId: heartrateRecordId(item),
+            startTime: ts,
+            endTime: null,
+            sourceUpdatedAt: ts,
+            payload: item,
+          });
+        }
+
+        cursor = addDays(chunkEnd, 0);
+        cursor.setUTCSeconds(cursor.getUTCSeconds() + 1);
       }
 
-      cursor = addDays(chunkEnd, 0);
-      cursor.setUTCSeconds(cursor.getUTCSeconds() + 1);
-    }
-
-    db.setSyncState('oura', 'heartrate', {
-      watermark: utcNowIso(),
+      db.setSyncState('oura', 'heartrate', {
+        watermark: utcNowIso(),
+      });
     });
   });
 }
