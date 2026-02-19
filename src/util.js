@@ -157,6 +157,19 @@ export function parseRetryAfterSeconds(retryAfter) {
   return Math.max(1, Math.ceil((retryAt - Date.now()) / 1000));
 }
 
+let requestJsonVerbose = false;
+
+export function setRequestJsonVerbose(enabled) {
+  const previous = requestJsonVerbose;
+  requestJsonVerbose = Boolean(enabled);
+  return previous;
+}
+
+function logRequestJson(message) {
+  if (requestJsonVerbose) {
+    console.log(message);
+  }
+}
 function buildHttpError(method, url, response, parsedBody, rawText) {
   const detailCandidates = [];
   if (parsedBody && typeof parsedBody === 'object') {
@@ -233,6 +246,7 @@ export async function requestJson(url, options = {}) {
 
   let lastError = null;
   const maxAttempts = Math.max(1, retries);
+  const requestLabel = `${method.toUpperCase()} ${target.toString()}`;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => {
@@ -240,6 +254,7 @@ export async function requestJson(url, options = {}) {
     }, timeoutMs);
 
     try {
+      logRequestJson(`[http] -> ${requestLabel} (attempt ${attempt}/${maxAttempts})`);
       const response = await fetch(target, {
         method,
         headers: requestHeaders,
@@ -248,6 +263,7 @@ export async function requestJson(url, options = {}) {
       });
 
       clearTimeout(timeout);
+      logRequestJson(`[http] <- ${response.status} ${response.statusText} ${requestLabel}`);
 
       const rawText = await response.text();
       let parsedBody = null;
@@ -266,6 +282,7 @@ export async function requestJson(url, options = {}) {
         const delayMs = retryAfterSeconds !== null
           ? Math.min(60000, Math.max(1000, retryAfterSeconds * 1000))
           : Math.min(60000, retryBackoffMs * (2 ** (attempt - 1)));
+        logRequestJson(`[http] retry in ${delayMs}ms (${requestLabel})`);
         await sleep(delayMs);
         continue;
       }
@@ -296,6 +313,7 @@ export async function requestJson(url, options = {}) {
         || error?.cause?.code === 'ETIMEDOUT';
       if (attempt < maxAttempts && retryable) {
         const delayMs = Math.min(60000, retryBackoffMs * (2 ** (attempt - 1)));
+        logRequestJson(`[http] error ${error?.message || String(error)}; retry in ${delayMs}ms (${requestLabel})`);
         await sleep(delayMs);
         continue;
       }

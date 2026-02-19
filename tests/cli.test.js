@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 import { main, parseArgs } from '../src/cli.js';
-import { dbPathFor, makeTempDir, removeDir } from './test-helpers.js';
+import { dbPathFor, jsonResponse, makeTempDir, removeDir, withFetchMock } from './test-helpers.js';
 
 function writeFile(filePath, content) {
   fs.writeFileSync(filePath, content, 'utf8');
@@ -51,6 +52,16 @@ test('parseArgs accepts subcommand override style for db', () => {
 test('parseArgs has providers and init subcommands', () => {
   assert.equal(parseArgs(['providers']).command, 'providers');
   assert.equal(parseArgs(['init']).command, 'init');
+});
+
+test('parseArgs sync accepts verbose flags', () => {
+  const longFlag = parseArgs(['sync', '--verbose', '--providers', 'oura']);
+  assert.equal(longFlag.options.verbose, true);
+  assert.deepEqual(longFlag.options.providers, ['oura']);
+
+  const shortFlag = parseArgs(['sync', '-v', '--providers=hevy,strava']);
+  assert.equal(shortFlag.options.verbose, true);
+  assert.deepEqual(shortFlag.options.providers, ['hevy', 'strava']);
 });
 
 test('parseArgs rejects flag-like auth provider id', () => {
@@ -238,6 +249,60 @@ module = "${moduleSpec}"
 
   const rc = await main(['--config', configPath, 'sync', '--providers', 'demo']);
   assert.equal(rc, 0);
+});
+
+test('sync prints provider progress and -v logs HTTP calls', async (t) => {
+  const dir = makeTempDir();
+  t.after(() => removeDir(dir));
+
+  const dbPath = dbPathFor(dir);
+  const utilModuleUrl = pathToFileURL(path.join(process.cwd(), 'src', 'util.js')).href;
+  const moduleSpec = writePlugin(
+    dir,
+    'http-demo',
+    `
+      import { requestJson } from ${JSON.stringify(utilModuleUrl)};
+      export default {
+        id: 'http-demo',
+        supportsAuth: false,
+        async sync() {
+          await requestJson('https://example.test/ping');
+        },
+      };
+    `,
+  );
+
+  const configPath = path.join(dir, 'health-sync.toml');
+  writeFile(configPath, configForPlugins(dbPath, [{ id: 'http-demo', moduleSpec }]));
+
+  withFetchMock(t, async () => jsonResponse({ ok: true }));
+
+  const verboseLogs = [];
+  const originalLog = console.log;
+  console.log = (...parts) => verboseLogs.push(parts.map((part) => String(part)).join(' '));
+  try {
+    const rcVerbose = await main(['--config', configPath, 'sync', '-v', '--providers', 'http-demo']);
+    assert.equal(rcVerbose, 0);
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.ok(verboseLogs.some((line) => line.includes('Syncing provider: http-demo')));
+  assert.ok(verboseLogs.some((line) => line.includes('[http] -> GET https://example.test/ping')));
+  assert.ok(verboseLogs.some((line) => line.includes('[http] <- 200')));
+
+  const quietLogs = [];
+  console.log = (...parts) => quietLogs.push(parts.map((part) => String(part)).join(' '));
+  try {
+    const rcQuiet = await main(['--config', configPath, 'sync', '--providers', 'http-demo']);
+    assert.equal(rcQuiet, 0);
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.ok(quietLogs.some((line) => line.includes('Syncing provider: http-demo')));
+  assert.equal(quietLogs.some((line) => line.includes('[http] ->')), false);
+  assert.equal(quietLogs.some((line) => line.includes('[http] <-')), false);
 });
 
 test('auth initializes app db and executes plugin auth', async (t) => {

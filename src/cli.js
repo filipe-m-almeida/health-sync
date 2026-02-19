@@ -7,6 +7,7 @@ import {
 import { openDb } from './db.js';
 import { PluginHelpers, providerEnabled } from './plugins/base.js';
 import { loadProviders } from './plugins/loader.js';
+import { setRequestJsonVerbose } from './util.js';
 
 const DEFAULT_CONFIG_PATH = 'health-sync.toml';
 
@@ -104,17 +105,24 @@ function parseAuthArgs(args) {
 }
 
 function parseSyncArgs(args) {
-  const providers = [];
+  const out = {
+    providers: [],
+    verbose: false,
+  };
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
+    if (arg === '-v' || arg === '--verbose') {
+      out.verbose = true;
+      continue;
+    }
     if (arg === '--providers') {
       let consumed = false;
       while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
         consumed = true;
         const raw = args[i + 1];
         for (const piece of String(raw).split(',').map((v) => v.trim()).filter(Boolean)) {
-          providers.push(piece);
+          out.providers.push(piece);
         }
         i += 1;
       }
@@ -126,16 +134,14 @@ function parseSyncArgs(args) {
     if (arg.startsWith('--providers=')) {
       const raw = arg.slice('--providers='.length);
       for (const piece of raw.split(',').map((v) => v.trim()).filter(Boolean)) {
-        providers.push(piece);
+        out.providers.push(piece);
       }
       continue;
     }
     throw new Error(`Unknown sync option: ${arg}`);
   }
 
-  return {
-    providers,
-  };
+  return out;
 }
 
 function parseProvidersArgs(args) {
@@ -224,7 +230,7 @@ function usage() {
     '  auth <provider>               Run provider authentication flow',
     '    --listen-host <host>        OAuth callback listen host (default 127.0.0.1)',
     '    --listen-port <port>        OAuth callback listen port (default 0 -> config redirect port)',
-    '  sync [--providers a,b,c]      Sync enabled providers',
+    '  sync [--providers a,b,c] [-v|--verbose]  Sync enabled providers',
     '  providers [--verbose]         List discovered providers',
     '  status                        Show sync state, counts, and recent runs',
   ].join('\n');
@@ -320,6 +326,7 @@ async function cmdSync(parsed) {
   const context = await loadContext(configPath);
   const dbPath = resolveDbPath(parsed.dbPath, context.loadedConfig);
   const db = openDb(dbPath, { credsPath: resolveCredsPath(configPath) });
+  const previousVerboseLogging = setRequestJsonVerbose(parsed.options.verbose);
 
   try {
     const discoveredIds = Array.from(context.providers.keys()).sort();
@@ -368,6 +375,7 @@ async function cmdSync(parsed) {
     let successes = 0;
     const failures = [];
     for (const providerId of toSync) {
+      console.log(`Syncing provider: ${providerId}`);
       try {
         await context.providers.get(providerId).sync(db, context.loadedConfig.data, context.helpers, {
           configPath,
@@ -393,6 +401,7 @@ async function cmdSync(parsed) {
 
     return 0;
   } finally {
+    setRequestJsonVerbose(previousVerboseLogging);
     db.close();
   }
 }
