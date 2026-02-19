@@ -53,6 +53,26 @@ test('parseArgs has providers and init subcommands', () => {
   assert.equal(parseArgs(['init']).command, 'init');
 });
 
+test('init creates scaffolded config from example template', async (t) => {
+  const dir = makeTempDir();
+  t.after(() => removeDir(dir));
+
+  const configPath = path.join(dir, 'health-sync.toml');
+  const dbPath = dbPathFor(dir, 'custom-init.sqlite');
+  const rc = await main(['--config', configPath, '--db', dbPath, 'init']);
+  assert.equal(rc, 0);
+
+  const content = fs.readFileSync(configPath, 'utf8');
+  assert.match(content, /health-sync configuration \(example\)/);
+  assert.match(content, /^\[app\]$/m);
+  assert.ok(content.includes(`db = "${dbPath}"`));
+  assert.match(content, /^\[oura\]$/m);
+  assert.match(content, /^\[withings\]$/m);
+  assert.match(content, /^\[hevy\]$/m);
+  assert.match(content, /^\[strava\]$/m);
+  assert.match(content, /^\[eightsleep\]$/m);
+});
+
 test('sync continues after one provider failure and returns non-zero', async (t) => {
   const dir = makeTempDir();
   t.after(() => removeDir(dir));

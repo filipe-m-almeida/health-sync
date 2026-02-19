@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 
 import { HealthSyncDb } from '../src/db.js';
@@ -53,6 +54,59 @@ test('getOAuthToken warns on invalid extra_json', (t) => {
     console.warn = originalWarn;
   }
   assert.ok(warnings.some((w) => w.includes('Ignoring invalid JSON in oauth_tokens.oura.extra_json')));
+});
+
+test('setOAuthToken persists credentials in .health-sync.creds', (t) => {
+  const db = withDb(t);
+
+  db.setOAuthToken('oura', {
+    accessToken: 'token-a',
+    refreshToken: 'refresh-a',
+    tokenType: 'Bearer',
+    scope: 'extapi:daily',
+    expiresAt: '2027-01-01T00:00:00Z',
+    extra: { method: 'oauth' },
+  });
+
+  assert.equal(fs.existsSync(db.credsPath), true);
+  const creds = JSON.parse(fs.readFileSync(db.credsPath, 'utf8'));
+  assert.equal(creds.tokens.oura.accessToken, 'token-a');
+  assert.equal(creds.tokens.oura.refreshToken, 'refresh-a');
+
+  const row = db.conn.prepare('SELECT COUNT(*) AS count FROM oauth_tokens WHERE provider = ?').get('oura');
+  assert.equal(Number(row?.count ?? 0), 0);
+});
+
+test('init migrates legacy oauth_tokens table rows into .health-sync.creds', (t) => {
+  const dir = makeTempDir();
+  const dbPath = dbPathFor(dir);
+
+  const legacy = new HealthSyncDb(dbPath);
+  legacy.init();
+  legacy.conn.prepare(`
+    INSERT INTO oauth_tokens(provider, access_token, refresh_token, token_type, scope, expires_at, obtained_at, extra_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run('withings', 'legacy-access', 'legacy-refresh', 'Bearer', 'user.metrics', '2027-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{"source":"db"}');
+  legacy.close();
+
+  const db = new HealthSyncDb(dbPath);
+  db.init();
+  t.after(() => {
+    db.close();
+    removeDir(dir);
+  });
+
+  assert.equal(fs.existsSync(db.credsPath), true);
+  const token = db.getOAuthToken('withings');
+  assert.ok(token);
+  assert.equal(token.accessToken, 'legacy-access');
+  assert.equal(token.refreshToken, 'legacy-refresh');
+
+  const creds = JSON.parse(fs.readFileSync(db.credsPath, 'utf8'));
+  assert.equal(creds.tokens.withings.accessToken, 'legacy-access');
+
+  const row = db.conn.prepare('SELECT COUNT(*) AS count FROM oauth_tokens WHERE provider = ?').get('withings');
+  assert.equal(Number(row?.count ?? 0), 0);
 });
 
 test('nested transaction after prior write works', async (t) => {

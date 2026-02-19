@@ -15,3 +15,5 @@ ANALYSIS_INSTRUCTIONS.md
 
 # Node dependencies
 node_modules/
+
+.health-sync.creds

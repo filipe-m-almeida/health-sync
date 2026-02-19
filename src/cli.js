@@ -196,6 +196,10 @@ function resolveDbPath(overrideDbPath, loadedConfig) {
   return './health.sqlite';
 }
 
+function resolveCredsPath(configPath) {
+  return path.join(path.dirname(path.resolve(configPath)), '.health-sync.creds');
+}
+
 function enableHint(providerId) {
   const builtin = new Set(['oura', 'withings', 'hevy', 'strava', 'eightsleep']);
   if (builtin.has(providerId)) {
@@ -236,11 +240,13 @@ async function loadContext(configPath) {
 
 async function cmdInit(parsed) {
   const configPath = path.resolve(parsed.configPath);
+  const explicitDbPath = parsed.dbPath ? String(parsed.dbPath) : null;
+
+  initConfigFile(configPath, explicitDbPath);
+
   const loaded = loadConfig(configPath);
   const dbPath = resolveDbPath(parsed.dbPath, loaded);
-
-  initConfigFile(configPath, dbPath);
-  const db = openDb(dbPath);
+  const db = openDb(dbPath, { credsPath: resolveCredsPath(configPath) });
   db.close();
 
   console.log(`Initialized config: ${configPath}`);
@@ -253,7 +259,7 @@ async function cmdInitDb(parsed) {
   const loaded = loadConfig(configPath);
   const dbPath = resolveDbPath(parsed.dbPath, loaded);
 
-  const db = openDb(dbPath);
+  const db = openDb(dbPath, { credsPath: resolveCredsPath(configPath) });
   db.close();
   console.log(`Initialized database: ${path.resolve(dbPath)}`);
   return 0;
@@ -261,14 +267,17 @@ async function cmdInitDb(parsed) {
 
 async function cmdAuth(parsed) {
   const configPath = path.resolve(parsed.configPath);
+  const explicitDbPath = parsed.dbPath ? String(parsed.dbPath) : null;
+
+  initConfigFile(configPath, explicitDbPath);
+
   const loaded = loadConfig(configPath);
   const dbPath = resolveDbPath(parsed.dbPath, loaded);
-  initConfigFile(configPath, dbPath);
 
   scaffoldProviderConfig(configPath, parsed.options.provider);
 
   const context = await loadContext(configPath);
-  const db = openDb(dbPath);
+  const db = openDb(dbPath, { credsPath: resolveCredsPath(configPath) });
 
   try {
     const plugin = context.providers.get(parsed.options.provider);
@@ -304,7 +313,7 @@ async function cmdSync(parsed) {
   const configPath = path.resolve(parsed.configPath);
   const context = await loadContext(configPath);
   const dbPath = resolveDbPath(parsed.dbPath, context.loadedConfig);
-  const db = openDb(dbPath);
+  const db = openDb(dbPath, { credsPath: resolveCredsPath(configPath) });
 
   try {
     const discoveredIds = Array.from(context.providers.keys()).sort();
@@ -409,7 +418,7 @@ async function cmdStatus(parsed) {
   const configPath = path.resolve(parsed.configPath);
   const loadedConfig = loadConfig(configPath);
   const dbPath = resolveDbPath(parsed.dbPath, loadedConfig);
-  const db = openDb(dbPath);
+  const db = openDb(dbPath, { credsPath: resolveCredsPath(configPath) });
 
   try {
     const syncState = db.listSyncState();

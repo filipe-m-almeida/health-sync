@@ -1,6 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import TOML from '@iarna/toml';
+
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const EXAMPLE_CONFIG_PATH = path.resolve(MODULE_DIR, '../health-sync.example.toml');
 
 const BUILTIN_DEFAULTS = {
   app: {
@@ -268,10 +272,43 @@ function writeToml(filePath, rawDoc) {
   fs.writeFileSync(filePath, rendered, 'utf8');
 }
 
-export function initConfigFile(configPath, dbPath) {
+function readExampleConfigTemplate() {
+  if (fs.existsSync(EXAMPLE_CONFIG_PATH)) {
+    return fs.readFileSync(EXAMPLE_CONFIG_PATH, 'utf8');
+  }
+  return TOML.stringify(defaultConfig());
+}
+
+function renderScaffoldConfig(dbPath = null) {
+  const template = readExampleConfigTemplate();
+  if (!dbPath) {
+    return template;
+  }
+
+  const dbLine = `db = ${JSON.stringify(String(dbPath))}`;
+  if (template.includes('# db = "./health.sqlite"')) {
+    return template.replace('# db = "./health.sqlite"', dbLine);
+  }
+  if (template.includes('[app]')) {
+    return template.replace('[app]', `[app]\n${dbLine}`);
+  }
+  return `[app]\n${dbLine}\n\n${template}`;
+}
+
+export function initConfigFile(configPath, dbPath = null) {
   const resolved = path.resolve(configPath);
-  const raw = fs.existsSync(resolved) ? TOML.parse(fs.readFileSync(resolved, 'utf8')) : {};
-  upsertSectionValues(raw, ['app'], { db: dbPath || BUILTIN_DEFAULTS.app.db });
+
+  if (!fs.existsSync(resolved)) {
+    fs.writeFileSync(resolved, renderScaffoldConfig(dbPath), 'utf8');
+    return;
+  }
+
+  if (!dbPath) {
+    return;
+  }
+
+  const raw = TOML.parse(fs.readFileSync(resolved, 'utf8'));
+  upsertSectionValues(raw, ['app'], { db: dbPath });
   writeToml(resolved, raw);
 }
 

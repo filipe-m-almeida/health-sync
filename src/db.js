@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import {
@@ -70,13 +71,18 @@ function normalizeWatermark(value) {
 }
 
 export class HealthSyncDb {
-  constructor(dbPath) {
+  constructor(dbPath, options = {}) {
     this.path = path.resolve(dbPath);
+    this.credsPath = path.resolve(
+      options.credsPath || path.join(path.dirname(this.path), '.health-sync.creds'),
+    );
     this.conn = new Database(this.path);
     this.conn.pragma('journal_mode = WAL');
     this.conn.pragma('foreign_keys = ON');
     this._runStatsStack = [];
     this._transactionDepth = 0;
+    this._oauthMigrated = false;
+    this._credsParseWarned = false;
   }
 
   close() {
@@ -148,6 +154,7 @@ export class HealthSyncDb {
     `);
 
     this._normalizeLegacyTimestamps();
+    this._migrateOAuthTokensToCredsFile();
   }
 
   _normalizeLegacyTimestamps() {
@@ -178,6 +185,176 @@ export class HealthSyncDb {
     }
   }
 
+  _readCredsDoc() {
+    if (!fs.existsSync(this.credsPath)) {
+      return { version: 1, tokens: {} };
+    }
+
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.credsPath, 'utf8'));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return { version: 1, tokens: {} };
+      }
+
+      const tokens = (parsed.tokens && typeof parsed.tokens === 'object' && !Array.isArray(parsed.tokens))
+        ? parsed.tokens
+        : {};
+
+      return {
+        version: 1,
+        updatedAt: normalizeTimestamp(parsed.updatedAt || parsed.updated_at) || null,
+        tokens,
+      };
+    } catch {
+      if (!this._credsParseWarned) {
+        console.warn(`Ignoring invalid JSON in ${this.credsPath}`);
+        this._credsParseWarned = true;
+      }
+      return { version: 1, tokens: {} };
+    }
+  }
+
+  _writeCredsDoc(doc) {
+    const normalized = {
+      version: 1,
+      updatedAt: utcNowIso(),
+      tokens: doc?.tokens && typeof doc.tokens === 'object' && !Array.isArray(doc.tokens)
+        ? doc.tokens
+        : {},
+    };
+
+    fs.mkdirSync(path.dirname(this.credsPath), { recursive: true });
+    const tempPath = `${this.credsPath}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(tempPath, `${stableJsonStringify(normalized)}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    fs.renameSync(tempPath, this.credsPath);
+    try {
+      fs.chmodSync(this.credsPath, 0o600);
+    } catch {
+      // Ignore chmod failures on filesystems that do not support POSIX modes.
+    }
+  }
+
+  _normalizeStoredToken(provider, rawToken, contextLabel = `.health-sync.creds.${provider}`) {
+    if (!rawToken || typeof rawToken !== 'object' || Array.isArray(rawToken)) {
+      return null;
+    }
+
+    const accessTokenValue = rawToken.accessToken ?? rawToken.access_token;
+    if (accessTokenValue === null || accessTokenValue === undefined || String(accessTokenValue).trim() === '') {
+      return null;
+    }
+
+    let extra = rawToken.extra ?? null;
+    if (extra === null && typeof rawToken.extra_json === 'string') {
+      extra = jsonLoadsOrNull(rawToken.extra_json, `${contextLabel}.extra_json`);
+    }
+
+    return {
+      provider,
+      accessToken: String(accessTokenValue),
+      refreshToken: rawToken.refreshToken ?? rawToken.refresh_token ?? null,
+      tokenType: rawToken.tokenType ?? rawToken.token_type ?? null,
+      scope: rawToken.scope ?? null,
+      expiresAt: normalizeTimestamp(rawToken.expiresAt ?? rawToken.expires_at),
+      obtainedAt: normalizeTimestamp(rawToken.obtainedAt ?? rawToken.obtained_at),
+      extra,
+    };
+  }
+
+  _listLegacyOAuthTokens() {
+    let rows = [];
+    try {
+      rows = this.conn.prepare('SELECT * FROM oauth_tokens ORDER BY provider ASC').all();
+    } catch {
+      rows = [];
+    }
+
+    const out = {};
+    for (const row of rows) {
+      const normalized = this._normalizeStoredToken(
+        row.provider,
+        {
+          access_token: row.access_token,
+          refresh_token: row.refresh_token,
+          token_type: row.token_type,
+          scope: row.scope,
+          expires_at: row.expires_at,
+          obtained_at: row.obtained_at,
+          extra_json: row.extra_json,
+        },
+        `oauth_tokens.${row.provider}`,
+      );
+      if (normalized) {
+        out[row.provider] = normalized;
+      }
+    }
+
+    return out;
+  }
+
+  _upsertCredsToken(provider, token) {
+    const doc = this._readCredsDoc();
+    const tokens = {
+      ...(doc.tokens || {}),
+      [provider]: {
+        accessToken: token.accessToken,
+        refreshToken: token.refreshToken,
+        tokenType: token.tokenType,
+        scope: token.scope,
+        expiresAt: token.expiresAt,
+        obtainedAt: token.obtainedAt,
+        extra: token.extra,
+      },
+    };
+    this._writeCredsDoc({ ...doc, tokens });
+  }
+
+  _migrateOAuthTokensToCredsFile() {
+    if (this._oauthMigrated) {
+      return;
+    }
+    this._oauthMigrated = true;
+
+    const legacyTokens = this._listLegacyOAuthTokens();
+    if (!Object.keys(legacyTokens).length) {
+      return;
+    }
+
+    const doc = this._readCredsDoc();
+    const tokens = { ...(doc.tokens || {}) };
+    let changed = false;
+
+    for (const [provider, token] of Object.entries(legacyTokens)) {
+      const existing = this._normalizeStoredToken(provider, tokens[provider]);
+      if (existing) {
+        continue;
+      }
+      tokens[provider] = {
+        accessToken: token.accessToken,
+        refreshToken: token.refreshToken,
+        tokenType: token.tokenType,
+        scope: token.scope,
+        expiresAt: token.expiresAt,
+        obtainedAt: token.obtainedAt,
+        extra: token.extra,
+      };
+      changed = true;
+    }
+
+    const nextDoc = changed ? { ...doc, tokens } : doc;
+    if (changed) {
+      this._writeCredsDoc(nextDoc);
+    }
+
+    const migratedProviders = Object.keys(legacyTokens)
+      .filter((provider) => this._normalizeStoredToken(provider, nextDoc.tokens?.[provider]));
+    for (const provider of migratedProviders) {
+      this.conn.prepare('DELETE FROM oauth_tokens WHERE provider = ?').run(provider);
+    }
+  }
   _incrementRunStats(stats, op) {
     if (!stats) {
       return;
@@ -356,22 +533,43 @@ export class HealthSyncDb {
   }
 
   getOAuthToken(provider) {
+    this._migrateOAuthTokensToCredsFile();
+
+    const fromCreds = this._normalizeStoredToken(
+      provider,
+      this._readCredsDoc().tokens?.[provider],
+    );
+    if (fromCreds) {
+      return fromCreds;
+    }
+
     const row = this.conn
       .prepare('SELECT * FROM oauth_tokens WHERE provider = ?')
       .get(provider);
     if (!row) {
       return null;
     }
-    return {
-      provider: row.provider,
-      accessToken: row.access_token,
-      refreshToken: row.refresh_token,
-      tokenType: row.token_type,
-      scope: row.scope,
-      expiresAt: normalizeTimestamp(row.expires_at),
-      obtainedAt: normalizeTimestamp(row.obtained_at),
-      extra: jsonLoadsOrNull(row.extra_json, `oauth_tokens.${provider}.extra_json`),
-    };
+
+    const legacy = this._normalizeStoredToken(
+      provider,
+      {
+        access_token: row.access_token,
+        refresh_token: row.refresh_token,
+        token_type: row.token_type,
+        scope: row.scope,
+        expires_at: row.expires_at,
+        obtained_at: row.obtained_at,
+        extra_json: row.extra_json,
+      },
+      `oauth_tokens.${provider}`,
+    );
+    if (!legacy) {
+      return null;
+    }
+
+    this._upsertCredsToken(provider, legacy);
+    this.conn.prepare('DELETE FROM oauth_tokens WHERE provider = ?').run(provider);
+    return legacy;
   }
 
   setOAuthToken(provider, {
@@ -382,36 +580,24 @@ export class HealthSyncDb {
     expiresAt = null,
     extra = null,
   }) {
-    const obtainedAt = utcNowIso();
-    const normalizedExpiresAt = normalizeTimestamp(expiresAt);
-    const extraJson = extra === null || extra === undefined ? null : stableJsonStringify(extra);
-    this.conn.prepare(`
-      INSERT INTO oauth_tokens (
-        provider, access_token, refresh_token, token_type, scope,
-        expires_at, obtained_at, extra_json
-      ) VALUES (
-        @provider, @access_token, @refresh_token, @token_type, @scope,
-        @expires_at, @obtained_at, @extra_json
-      )
-      ON CONFLICT(provider)
-      DO UPDATE SET
-        access_token = excluded.access_token,
-        refresh_token = excluded.refresh_token,
-        token_type = excluded.token_type,
-        scope = excluded.scope,
-        expires_at = excluded.expires_at,
-        obtained_at = excluded.obtained_at,
-        extra_json = excluded.extra_json
-    `).run({
+    if (accessToken === null || accessToken === undefined || String(accessToken).trim() === '') {
+      throw new Error('accessToken is required');
+    }
+
+    this._migrateOAuthTokensToCredsFile();
+
+    const token = {
       provider,
-      access_token: accessToken,
-      refresh_token: refreshToken,
-      token_type: tokenType,
-      scope,
-      expires_at: normalizedExpiresAt,
-      obtained_at: obtainedAt,
-      extra_json: extraJson,
-    });
+      accessToken: String(accessToken),
+      refreshToken: refreshToken === undefined ? null : refreshToken,
+      tokenType: tokenType === undefined ? null : tokenType,
+      scope: scope === undefined ? null : scope,
+      expiresAt: normalizeTimestamp(expiresAt),
+      obtainedAt: utcNowIso(),
+      extra: extra === undefined ? null : extra,
+    };
+
+    this._upsertCredsToken(provider, token);
   }
 
   startSyncRun(provider, resource, watermarkBefore = null) {
@@ -596,8 +782,8 @@ export class HealthSyncDb {
   }
 }
 
-export function openDb(dbPath) {
-  const db = new HealthSyncDb(dbPath);
+export function openDb(dbPath, options = {}) {
+  const db = new HealthSyncDb(dbPath, options);
   db.init();
   return db;
 }

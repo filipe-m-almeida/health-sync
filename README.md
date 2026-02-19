@@ -102,7 +102,7 @@ See `health-sync.example.toml` for all provider options.
 
 ## CLI Commands
 
-- `health-sync init`: create/update config and create DB tables
+- `health-sync init`: create a scaffolded config (from `health-sync.example.toml`) and create DB tables
 - `health-sync init-db`: create DB tables only (legacy)
 - `health-sync auth <provider>`: run auth flow for one provider/plugin
 - `health-sync sync`: run sync for all enabled providers
@@ -129,7 +129,7 @@ The database keeps raw JSON payloads and sync metadata in generic tables:
 
 - `records`: provider/resource records
 - `sync_state`: per-resource watermarks/cursors
-- `oauth_tokens`: stored OAuth tokens
+- `.health-sync.creds`: stored provider credentials and OAuth tokens
 - `sync_runs`: run history and per-sync counters
 
 This schema is intentionally generic so upstream API changes are less likely to require migrations.
