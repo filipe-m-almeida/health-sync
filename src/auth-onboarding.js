@@ -85,7 +85,7 @@ class MaskedInput {
 
   setValue(value) {
     this.value = String(value || '');
-    this.cursor = Math.min(this.cursor, graphemes(this.value).length);
+    this.cursor = graphemes(this.value).length;
   }
 
   handleInput(data) {
@@ -196,6 +196,13 @@ class MaskedInput {
 
     return [prompt + textWithCursor + padding];
   }
+}
+
+function clearTerminalScreen() {
+  if (!interactiveTerminalAvailable()) {
+    return;
+  }
+  process.stdout.write('\x1b[2J\x1b[H');
 }
 
 function hasText(value) {
@@ -645,6 +652,7 @@ async function runTuiPrompt(setupFn) {
     };
 
     try {
+      clearTerminalScreen();
       removeAbortListener = tui.addInputListener((data) => {
         if (matchesKey(data, Key.ctrl('c'))) {
           finish(ABORT_SENTINEL);
@@ -685,18 +693,28 @@ function createScreenText(title, lines = []) {
     if (value.startsWith('- ')) {
       return `${colors.accent('-')} ${colors.text(value.slice(2))}`;
     }
+    if (/^\d+\.\s/.test(value)) {
+      const [prefix, ...rest] = value.split(' ');
+      return `${colors.accent(prefix)} ${colors.text(rest.join(' '))}`;
+    }
+    if (/^Step\s+\d+\s+of\s+\d+/.test(value)) {
+      return colors.accentSoft(value);
+    }
     return colors.text(value);
   });
 
-  const out = [titleLine, divider, ''];
+  const controls = baseChalk.level > 0
+    ? colors.control('Use Up/Down to move')
+    : 'Use Up/Down to move';
+  const controls2 = baseChalk.level > 0
+    ? colors.control('Enter: continue   Esc: back   Ctrl+C: exit setup')
+    : 'Enter: continue   Esc: back   Ctrl+C: exit setup';
+
+  const out = ['', titleLine, divider, ''];
   if (lines.length) {
     out.push(...styledLines, '');
   }
-  out.push(
-    baseChalk.level > 0
-      ? colors.control('Use Up/Down to move, Enter to continue, Esc to cancel this screen, Ctrl+C to abort setup.')
-      : 'Use Up/Down to move, Enter to continue, Esc to cancel this screen, Ctrl+C to abort setup.',
-  );
+  out.push(controls, controls2, '');
   return out.join('\n');
 }
 
@@ -714,7 +732,7 @@ async function promptSelect({ title, lines = [], items }) {
     list.onCancel = () => finish(null);
 
     root.addChild(heading);
-    root.addChild(new Spacer(1));
+    root.addChild(new Spacer(2));
     root.addChild(list);
 
     tui.addChild(root);
@@ -746,6 +764,9 @@ async function promptInput({
 
     if (hasText(initialValue)) {
       input.setValue(String(initialValue));
+      if (typeof input.cursor === 'number') {
+        input.cursor = String(initialValue).length;
+      }
     }
 
     input.onSubmit = (rawValue) => {
@@ -767,7 +788,7 @@ async function promptInput({
     }
 
     root.addChild(heading);
-    root.addChild(new Spacer(1));
+    root.addChild(new Spacer(2));
     root.addChild(input);
 
     tui.addChild(root);
@@ -813,6 +834,7 @@ function fieldPromptLines(providerId, field, currentLabel, guide = null, step = 
   const out = [];
   if (step !== null && total !== null) {
     out.push(`Step ${step} of ${total}`);
+    out.push('');
   }
 
   const customPrompts = Array.isArray(guide?.fieldPrompts?.[field.key])
@@ -823,11 +845,14 @@ function fieldPromptLines(providerId, field, currentLabel, guide = null, step = 
   } else {
     out.push(`Set ${field.label} for ${providerName(providerId)}.`);
   }
+  out.push('');
 
   if (guide?.fieldHelp?.[field.key]) {
     out.push(`How to find it: ${guide.fieldHelp[field.key]}`);
+    out.push('');
   }
   out.push(`Current saved value: ${currentLabel}`);
+  out.push('');
   out.push('Press Enter to keep the current value if you do not want to change it.');
   return out;
 }
@@ -1055,7 +1080,7 @@ export async function promptAuthProviderChecklist(providerRows) {
 
     const root = new Container();
     root.addChild(heading);
-    root.addChild(new Spacer(1));
+    root.addChild(new Spacer(2));
     root.addChild(list);
     tui.addChild(root);
     tui.setFocus(list);
