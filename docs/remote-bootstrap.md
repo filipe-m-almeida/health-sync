@@ -229,3 +229,80 @@ The bot should never ask users to paste raw provider secrets into chat.
 2. Avoid long token lifetimes; prefer short windows (`12h` or `24h`).
 3. Rotate/restart bootstrap sessions rather than reusing stale sessions.
 4. Treat imported `health-sync.toml` and `.health-sync.creds` as sensitive.
+
+## Threat Modeling
+
+This section documents key threats, current controls, and remaining risk.
+
+### Assets to protect
+
+1. Provider credentials and tokens in `.health-sync.creds`.
+2. Secret values in `health-sync.toml`.
+3. Bootstrap private key material on the bot side.
+4. Integrity of imported configuration and credential state.
+
+### Trust boundaries
+
+1. Bot machine and its local bootstrap store.
+2. User machine running `health-sync init --remote <token>`.
+3. Untrusted transport channel (for example Telegram).
+4. Token exchange channel from bot to user.
+
+### Primary threats
+
+1. Man-in-the-middle on bootstrap token exchange:
+   - If an attacker can alter the token/public-key material before it reaches the user, the user may encrypt to attacker-controlled key material.
+   - This is a real residual risk when token exchange itself is not authenticated.
+
+2. Archive interception in transit:
+   - Attacker sees archive file while in transit.
+   - Expected impact is limited by encryption and authenticated decryption.
+
+3. Replay of old archive:
+   - Attacker re-sends an old archive to bot.
+   - Without replay protection this could overwrite fresh config with stale state.
+
+4. Local compromise of bot bootstrap store:
+   - Theft of bootstrap private keys enables decryption of archives tied to those sessions.
+
+5. Malicious or malformed archive payload:
+   - Attempts to exploit parser/writer behavior or force unsafe writes.
+
+### Current mitigations
+
+1. Confidentiality and integrity of archive contents:
+   - X25519 + HKDF-SHA256 + AES-256-GCM.
+   - Authenticated metadata and payload checksum verification.
+
+2. Session binding and one-time finish:
+   - Archive bound to session/key identifiers.
+   - Successful finish marks session consumed.
+
+3. Safe local file writes:
+   - Atomic writes.
+   - Restrictive file mode (`0600`) for secret files.
+   - Backup before overwrite.
+
+4. Input validation:
+   - Strict token and envelope parsing.
+   - Schema/version checks.
+
+### Residual risk and limitations
+
+1. Bootstrap token delivery authenticity:
+   - The design does not cryptographically authenticate bot identity to user at token delivery time.
+   - Therefore it is vulnerable to token substitution MITM if delivery channel is compromised.
+
+2. Endpoint compromise:
+   - Compromise of user or bot endpoint bypasses transport encryption guarantees.
+
+3. Operational misuse:
+   - Long-lived tokens or weak handling of archive files increases exposure window.
+
+### Recommended hardening
+
+1. Use an authenticated delivery channel for token transfer.
+2. Show and verify bootstrap fingerprint out-of-band before user runs the command.
+3. Keep token TTL short and enforce one-time operational use.
+4. Consider adding optional signature verification for bootstrap tokens from a bot identity key.
+5. Add alerting/audit logs for failed decrypts, mismatches, and replay attempts.
