@@ -1,0 +1,21 @@
+{
+  "name": "health-sync-node",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node.js port of health-sync",
+  "bin": {
+    "health-sync": "./bin/health-sync.js"
+  },
+  "scripts": {
+    "start": "node ./bin/health-sync.js",
+    "check": "node --check ./bin/health-sync.js && node --check ./src/cli.js"
+  },
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "better-sqlite3": "^11.9.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
