@@ -6,8 +6,8 @@ Use these steps whenever the user asks for a release.
 
 ### Default version bump rule
 
-- Default to a **minor** bump.
-- Only use `patch`, `major`, or pre-release bumps if the user explicitly asks.
+- Default to a **patch** bump.
+- Only use `minor`, `major`, or pre-release bumps if the user explicitly asks.
 
 ### 0) Preflight checks
 
@@ -25,7 +25,7 @@ Release only from a clean working tree, unless the user explicitly asks otherwis
 ### 1) Bump version and create tag
 
 ```bash
-BUMP=${BUMP:-minor}   # default behavior
+BUMP=${BUMP:-patch}   # default behavior
 npm version "$BUMP" -m "release: v%s"
 VERSION=$(node -p "require('./package.json').version")
 TAG="v$VERSION"
@@ -72,15 +72,16 @@ $(git log --pretty=format:'- %s (%h)' "$RANGE")
 EOF
 ```
 
-### 3) Show notes and get confirmation (required)
+### 3) Confirm version number and release notes (required)
 
-Before any push or publish action, always show the notes to the user and wait for explicit confirmation.
+Before any push or publish action, always show the resolved version number and release notes to the user, then wait for explicit confirmation.
 
 ```bash
+echo "Version: $VERSION"
 cat "$NOTES_FILE"
 ```
 
-Do not continue until the user confirms the notes and says to proceed.
+Do not continue until the user confirms both the version number and the release notes, and says to proceed.
 
 ### 4) Push commit and tag
 
