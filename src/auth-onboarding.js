@@ -226,20 +226,6 @@ function trimOrNull(value) {
   return String(value).trim();
 }
 
-function defaultListDescription(provider) {
-  if (provider.description) {
-    return String(provider.description);
-  }
-  if (provider.supportsInteractiveSetup) {
-    return provider.supportsAuth
-      ? 'Supports authentication'
-      : 'Guided setup available';
-  }
-  return provider.supportsAuth
-    ? 'Supports authentication'
-    : 'No interactive setup available';
-}
-
 function providerName(providerId) {
   return PROVIDER_NAMES[providerId] || providerId;
 }
@@ -1068,16 +1054,10 @@ export async function promptAuthProviderChecklist(providerRows) {
 
     const heading = new Text('', 0, 0);
     const providerById = new Map(providerRows.map((provider) => [provider.id, provider]));
-    const listItems = providerRows.map((provider) => {
-      const selectable = selectableIds.has(provider.id);
-      return {
-        value: provider.id,
-        label: '',
-        description: selectable
-          ? defaultListDescription(provider)
-          : `${defaultListDescription(provider)} (interactive setup unavailable)`,
-      };
-    });
+    const listItems = providerRows.map((provider) => ({
+      value: provider.id,
+      label: '',
+    }));
     const list = new SelectList(listItems, Math.min(12, Math.max(3, listItems.length)), SELECT_THEME);
 
     const renderHeading = () => {
