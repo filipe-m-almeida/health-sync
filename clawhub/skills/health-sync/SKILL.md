@@ -1,6 +1,6 @@
 ---
 name: health-sync
-description: Analyze synced health data across providers (Oura, Withings, Hevy, Strava, Eight Sleep).
+description: Analyze synced health data across pOura, Withings, Hevy, Strava and Eight Sleep.
 read_when:
   - User asks for health-sync setup, auth, sync, or provider status
   - User asks about sleep, recovery, training, activity, your health, or cross-provider trends
