@@ -2,7 +2,7 @@
 name: health-sync
 description: Analyze synced health data across Oura, Withings, Hevy, Strava, WHOOP, and Eight Sleep.
 read_when:
-  - User asks for health-sync setup, auth, sync, or provider status
+  - User asks for health-sync setup, auth, sync, provider status, or remote bootstrap onboarding
   - User asks about sleep, recovery, training, activity, your health, or cross-provider trends
 ---
 
@@ -31,13 +31,26 @@ Use this skill when the user asks questions such as:
 - What trends are you seeing in my recovery, sleep, and training?
 - What useful insights or next steps should I focus on?
 
-## Setup Handling
+## Setup Handling (Remote Bootstrap Only)
 
-For initial setup or auth onboarding, consult:
+Setup is bot-led and remote-first. The only supported onboarding flow is:
+
+1. Bot runs `health-sync init remote bootstrap`.
+2. Bot sends user: `health-sync init --remote <bootstrap-token>`.
+3. User sends back encrypted archive.
+4. Bot runs `health-sync init remote finish <ref> <archive>`.
+
+For full operational instructions, always consult:
 
 - `references/setup.md`
+- `../../../docs/remote-bootstrap.md` (architecture and security details)
 
-Do not duplicate setup instructions here. This skill should defer setup details to the setup reference.
+Do not use or recommend legacy direct setup flows such as:
+
+1. `health-sync init` as the primary user instruction
+2. `health-sync auth <provider>` as a standalone onboarding path
+
+Those commands may still exist for maintenance/debugging, but they are not the setup flow this skill should guide.
 
 ## Schema Handling
 

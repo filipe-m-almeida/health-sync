@@ -1,300 +1,104 @@
-# Health Sync Setup Reference
+# Health Sync Setup Reference (Bot View)
 
-Use this file to guide setup behavior in ClawHub.
+This is the authoritative setup flow for ClawHub bots.
 
-## Scope And Defaults
+Only one onboarding flow is supported:
 
-- Operate inside `workspace/health-sync`.
-- Prefer `health-sync` CLI commands over direct provider API calls.
-- You are expected to guide the user through setup.
-- Default to user-run setup (recommended) to reduce risk of leaking secrets/tokens.
-- Assisted setup is allowed only if the user explicitly asks for it.
-- Do not use direct provider `curl` calls unless you are debugging a failed CLI auth flow.
+1. Bot creates bootstrap token.
+2. Bot tells user to run remote onboarding locally.
+3. User sends encrypted archive.
+4. Bot imports archive locally.
 
-## Standard Bootstrap (Always First)
+Legacy setup flows are out of scope for bot guidance.
 
-1. Ensure the CLI is installed:
+## Command Summary
 
-```bash
-npm install -g health-sync
-health-sync --help
-```
+Bot-side commands:
 
-2. Work inside the project directory:
+1. `health-sync init remote bootstrap --expires-in 24h`
+2. `health-sync init remote finish <bootstrap-ref> <archive-path>`
+3. `health-sync providers --verbose`
+4. `health-sync sync`
+5. `health-sync status`
 
-```bash
-mkdir -p workspace/health-sync
-cd workspace/health-sync
-```
+User-side command:
 
-3. Initialize config + local storage:
+1. `health-sync init --remote <bootstrap-token>`
 
-```bash
-health-sync init
-```
+## Bot Responsibilities
 
-Expected files in this directory:
+The bot must:
 
-- `health-sync.toml`
-- `health.sqlite`
-- `.health-sync.creds` (created when auth tokens are saved)
+1. Run bootstrap on bot infrastructure.
+2. Share only the single remote command with the user.
+3. Never ask user for provider secrets in chat.
+4. Receive user archive file.
+5. Run finish locally and confirm import.
+6. Run verification sync and status.
 
-## Direct Auth Rule (Mandatory)
+## Detailed Bot Runbook
 
-For OAuth2 providers (`oura`, `withings`, `strava`, `whoop`), be direct and guide the user through this exact pattern:
-
-1. Create/select provider app in the provider portal.
-2. Get `client_id` and `client_secret`.
-3. Set the exact callback URL in provider portal and `health-sync.toml`.
-4. Run `health-sync auth <provider>` from `workspace/health-sync`.
-5. Tell user they may see an error page after consent.
-6. If an error page appears, they should still copy the full callback URL and send it.
-7. Use that callback URL/code with the running `health-sync auth` flow.
-
-For non-OAuth2 providers:
-
-- Hevy: API key only (`[hevy].api_key`), no `auth` command.
-- Eight Sleep: not OAuth2; uses account credentials (`email`/`password`) or `access_token`, then `health-sync auth eightsleep`.
-
-## Two Flows After `health-sync init`
-
-### 1) Recommended Flow (Default)
-
-Use this unless the user explicitly asks for hands-on setup help.
-
-1. Guide the user to edit `workspace/health-sync/health-sync.toml`.
-2. Explain which fields they need for each enabled provider.
-3. Tell them to run `health-sync auth` commands themselves from `workspace/health-sync`.
-4. Then run sync/status.
-
-User-run commands:
-
-```bash
-cd workspace/health-sync
-health-sync auth oura
-health-sync auth withings
-health-sync auth strava
-health-sync auth whoop
-health-sync auth eightsleep
-health-sync sync
-health-sync status
-```
-
-Notes:
-
-- Hevy does not use `health-sync auth`; it uses `[hevy].api_key` in `health-sync.toml`.
-- `health-sync auth <provider>` scaffolds/enables that provider section in config.
-
-### 2) Non-Recommended Assisted Flow
-
-Use only if the user explicitly asks the agent to guide setup step-by-step.
-
-1. Warn briefly that assisted setup may expose sensitive credentials/tokens.
-2. Proceed one provider at a time.
-3. For each provider:
-   - guide where to get credentials
-   - update `health-sync.toml`
-   - run `health-sync auth <provider>` when supported
-   - confirm success before moving to next provider
-4. Avoid direct provider API calls unless debugging a CLI auth error.
-
-Provider order:
-
-1. `oura`
-2. `withings`
-3. `strava`
-4. `whoop`
-5. `eightsleep`
-6. `hevy`
-
-## Provider Setup Links And Credential Instructions
-
-### Oura (`health-sync auth oura`)
-
-Where the user goes:
-
-- Oura app console: `https://developer.ouraring.com/applications`
-
-How to get credentials:
-
-1. Sign in to Oura developer portal.
-2. Create/select an application.
-3. Set callback/redirect URI to `http://localhost:8080/callback`.
-4. Copy the app `client_id` and `client_secret`.
-5. Put them in `[oura]` in `health-sync.toml`.
-
-Config requirements:
-
-- `[oura].client_id`
-- `[oura].client_secret`
-- `[oura].redirect_uri` (default scaffold: `http://localhost:8080/callback`)
-
-Default OAuth endpoints in scaffold:
-
-- authorize: `https://moi.ouraring.com/oauth/v2/ext/oauth-authorize`
-- token: `https://moi.ouraring.com/oauth/v2/ext/oauth-token`
+### Phase 1: Bootstrap locally (bot machine)
 
 Run:
 
 ```bash
-health-sync auth oura
+health-sync init remote bootstrap --expires-in 24h
 ```
 
-Direct callback instruction:
+Capture from output:
 
-- If Oura shows an error page after consent, ask the user to still copy the full callback URL and paste it.
+1. bootstrap token (`hsr1...`)
+2. session fingerprint
+3. expiry timestamp
 
-### Withings (`health-sync auth withings`)
+### Phase 2: Tell user exactly what to run
 
-Where the user goes:
+Send this instruction pattern:
 
-- Integration guide: `https://developer.withings.com/developer-guide/v3/integration-guide/public-health-data-api/developer-account/create-your-accesses-no-medical-cloud/`
-- Developer dashboard: `https://developer.withings.com/dashboard/`
+```text
+I created a secure one-time setup token for your Health Sync onboarding.
 
-How to get credentials:
+Please run this on your own machine:
+health-sync init --remote <TOKEN>
 
-1. Sign in/create a Withings developer account.
-2. Create/select an app for the public health data API.
-3. Set callback/redirect URI to `http://127.0.0.1:8485/callback`.
-4. Copy `client_id` and `client_secret`.
-5. Put them in `[withings]` in `health-sync.toml`.
+This will walk you through provider setup and generate an encrypted archive.
+Send that archive file back here when done.
+```
 
-Config requirements:
+Important guidance to include:
 
-- `[withings].client_id`
-- `[withings].client_secret`
-- `[withings].redirect_uri` (default scaffold: `http://127.0.0.1:8485/callback`)
+1. User should run command in a local terminal with browser access.
+2. User should complete provider auth inside the interactive wizard.
+3. User should upload the generated `.enc` archive file to the bot.
+
+### Phase 3: Import archive locally (bot machine)
+
+After receiving the archive:
+
+```bash
+health-sync init remote finish <TOKEN_OR_KEY_ID_OR_SESSION_ID> /path/to/archive.enc
+```
+
+Optional target paths:
+
+```bash
+health-sync init remote finish <REF> /path/to/archive.enc \
+  --target-config /path/to/health-sync.toml \
+  --target-creds /path/to/.health-sync.creds
+```
+
+Expected finish behavior:
+
+1. decrypts archive
+2. validates checksums
+3. writes config + creds
+4. creates backups if files already existed
+5. marks bootstrap session as consumed
+
+### Phase 4: Verify ingestion
 
 Run:
-
-```bash
-health-sync auth withings
-```
-
-Direct callback instruction:
-
-- If browser flow does not return cleanly, request the full callback URL and feed it back into the running auth flow.
-
-### Strava (`health-sync auth strava`)
-
-Where the user goes:
-
-- Strava API app settings: `https://www.strava.com/settings/api`
-- Strava auth docs: `https://developers.strava.com/docs/authentication`
-
-How to get credentials:
-
-1. Create/select a Strava API app.
-2. Configure callback settings so your redirect URI matches `http://127.0.0.1:8486/callback`.
-3. Copy app `client_id` and `client_secret`.
-4. Put them in `[strava]` in `health-sync.toml`.
-
-Config options:
-
-- Option A (recommended): `[strava].client_id`, `[strava].client_secret`, `[strava].redirect_uri`
-- Option B: `[strava].access_token` (static token mode)
-- Default scaffold redirect: `http://127.0.0.1:8486/callback`
-
-Run:
-
-```bash
-health-sync auth strava
-```
-
-Direct callback instruction:
-
-- If consent flow does not complete cleanly in browser, ask for the full callback URL and continue auth with it.
-
-### WHOOP (`health-sync auth whoop`)
-
-Where the user goes:
-
-- WHOOP Developer Dashboard: `https://developer-dashboard.whoop.com`
-- WHOOP Getting Started: `https://developer.whoop.com/docs/developing/getting-started`
-- WHOOP OAuth docs: `https://developer.whoop.com/docs/developing/oauth`
-
-How to get credentials:
-
-1. Create/select a WHOOP app in the Developer Dashboard.
-2. Configure redirect URI to `http://127.0.0.1:8487/callback`.
-3. Ensure app scopes include the WHOOP datasets needed for sync.
-4. Include `offline` scope so the CLI receives refresh tokens.
-5. Copy `client_id` and `client_secret`.
-6. Put them in `[whoop]` in `health-sync.toml`.
-
-Config requirements:
-
-- `[whoop].client_id`
-- `[whoop].client_secret`
-- `[whoop].redirect_uri` (default scaffold: `http://127.0.0.1:8487/callback`)
-- `[whoop].scopes` should include `offline`
-
-Default WHOOP endpoints in scaffold:
-
-- authorize: `https://api.prod.whoop.com/oauth/oauth2/auth`
-- token: `https://api.prod.whoop.com/oauth/oauth2/token`
-- API base: `https://api.prod.whoop.com/developer`
-
-Run:
-
-```bash
-health-sync auth whoop
-```
-
-Direct callback instruction:
-
-- If consent flow does not complete cleanly in browser, ask for the full callback URL and continue auth with it.
-
-### Eight Sleep (`health-sync auth eightsleep`)
-
-Where the user goes:
-
-- Eight Sleep app/web account (no public OAuth app dashboard required for this flow)
-
-How to get credentials:
-
-1. Use account credentials from Eight Sleep app/web login.
-2. Put `email` and `password` in `[eightsleep]`.
-3. Keep scaffolded `client_id`/`client_secret` defaults unless there is a known upstream change.
-
-Config options:
-
-- Option A (recommended): `[eightsleep].email`, `[eightsleep].password`
-- Option B: `[eightsleep].access_token`
-- `client_id` and `client_secret` defaults are scaffolded by `health-sync init`
-
-Run:
-
-```bash
-health-sync auth eightsleep
-```
-
-### Hevy (No `auth` command)
-
-Where the user goes:
-
-- Hevy API docs: `https://api.hevyapp.com/docs/`
-- Hevy developer/API key page: `https://hevy.com/settings?developer`
-
-How to get credentials:
-
-1. Open Hevy developer page.
-2. Generate/copy API key (Hevy Pro required).
-3. Put key in `[hevy].api_key` and set `enabled = true`.
-
-Config requirements:
-
-- `[hevy].api_key`
-
-Run sync after config:
-
-```bash
-health-sync sync
-```
-
-## Post-Setup Checks
-
-Run from `workspace/health-sync`:
 
 ```bash
 health-sync providers --verbose
@@ -302,9 +106,68 @@ health-sync sync
 health-sync status
 ```
 
-## Safety Notes
+Report:
 
-- Keep all setup work in `workspace/health-sync`.
-- Never commit `health-sync.toml` if it contains secrets.
-- Never commit `.health-sync.creds`.
-- Prefer guiding the user to run auth locally themselves.
+1. providers discovered/enabled
+2. sync success or provider-specific failures
+3. current data freshness
+
+## What The Bot Should Never Do
+
+Do not ask users to:
+
+1. paste `client_secret`, `api_key`, OAuth callback URLs, access tokens, or passwords into chat
+2. run `health-sync auth <provider>` as onboarding
+3. do manual same-machine setup (`health-sync init`) as the primary flow
+
+Do not instruct mixed flows. Remote bootstrap is the only setup workflow for ClawHub bot guidance.
+
+## User Experience Copy (Recommended)
+
+### Bootstrap response
+
+```text
+Secure setup is ready.
+Run this command on your own machine:
+
+health-sync init --remote <TOKEN>
+
+The wizard will guide you provider-by-provider and then output an encrypted archive.
+Please upload that archive file here when complete.
+```
+
+### Archive received response
+
+```text
+Archive received. I am now importing your encrypted setup on my side.
+```
+
+### Import success response
+
+```text
+Setup import complete. I will now run a sync and verify your provider status.
+```
+
+## Failure Handling
+
+1. Token expired:
+   - Generate a new bootstrap token.
+2. Session already consumed:
+   - Start a fresh bootstrap and rerun user command.
+3. Archive does not match token/session:
+   - Confirm user used the latest token.
+4. User reports no archive generated:
+   - Ask them to rerun `health-sync init --remote <TOKEN>` and complete provider auth steps.
+
+## Security Notes
+
+1. Treat bootstrap tokens as sensitive and short-lived.
+2. Keep bot bootstrap storage private.
+3. Treat imported `health-sync.toml` and `.health-sync.creds` as secrets.
+4. Do not commit secret files to version control.
+
+## Additional Architecture Reference
+
+For full crypto/session/archive architecture:
+
+- `../../../../docs/remote-bootstrap.md`
