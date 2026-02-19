@@ -48,7 +48,6 @@ const PROVIDER_NAMES = {
   eightsleep: 'Eight Sleep',
 };
 
-const SECRET_PLACEHOLDER = '***';
 const ABORT_SENTINEL = Symbol('health-sync-abort');
 
 export class UserAbortError extends Error {
@@ -67,6 +66,10 @@ export function isUserAbortError(err) {
 
 function graphemes(value) {
   return Array.from(String(value || ''));
+}
+
+function secretMask(value) {
+  return '*'.repeat(graphemes(value).length);
 }
 
 class MaskedInput {
@@ -172,7 +175,7 @@ class MaskedInput {
       return [prompt];
     }
 
-    const masked = graphemes(this.value).length > 0 ? SECRET_PLACEHOLDER : '';
+    const masked = secretMask(this.value);
     let visible = masked;
     let cursorDisplay = Math.min(this.cursor, graphemes(masked).length);
 
@@ -869,8 +872,11 @@ async function promptTextField(providerId, cfg, field, options = {}) {
   const { guide = null, step = null, total = null } = options;
   const currentValue = cfg?.[field.key];
   const isSecret = Boolean(field.secret);
+  const existingSecretMask = isSecret && hasText(currentValue)
+    ? secretMask(String(currentValue))
+    : null;
   const currentLabel = hasText(currentValue)
-    ? (isSecret ? SECRET_PLACEHOLDER : String(currentValue))
+    ? (isSecret ? existingSecretMask : String(currentValue))
     : '(not set)';
   const lines = fieldPromptLines(providerId, field, currentLabel, guide, step, total);
 
@@ -878,7 +884,7 @@ async function promptTextField(providerId, cfg, field, options = {}) {
 
   while (true) {
     const initialValue = hasText(currentValue)
-      ? (isSecret ? SECRET_PLACEHOLDER : String(currentValue))
+      ? (isSecret ? existingSecretMask : String(currentValue))
       : '';
 
     const rawValue = await promptInput({
@@ -894,7 +900,7 @@ async function promptTextField(providerId, cfg, field, options = {}) {
       return { ok: false, value: null };
     }
 
-    const normalized = isSecret && rawValue === SECRET_PLACEHOLDER && hasText(currentValue)
+    const normalized = isSecret && hasText(currentValue) && rawValue === existingSecretMask
       ? trimOrNull(currentValue)
       : normalizePromptedValue(rawValue, currentValue, required);
     if (required && !hasText(normalized)) {
