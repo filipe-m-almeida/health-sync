@@ -202,7 +202,14 @@ function clearTerminalScreen() {
   if (!interactiveTerminalAvailable()) {
     return;
   }
-  process.stdout.write('\x1b[2J\x1b[H');
+  process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
+}
+
+function writeScreenTransitionGap(lines = 2) {
+  if (!interactiveTerminalAvailable()) {
+    return;
+  }
+  process.stdout.write('\n'.repeat(Math.max(0, lines)));
 }
 
 function hasText(value) {
@@ -645,6 +652,7 @@ async function runTuiPrompt(setupFn) {
       }
       try {
         tui.stop();
+        writeScreenTransitionGap(2);
       } catch {
         // no-op
       }
@@ -710,7 +718,7 @@ function createScreenText(title, lines = []) {
     ? colors.control('Enter: continue   Esc: back   Ctrl+C: exit setup')
     : 'Enter: continue   Esc: back   Ctrl+C: exit setup';
 
-  const out = ['', titleLine, divider, ''];
+  const out = ['', '', titleLine, divider, ''];
   if (lines.length) {
     out.push(...styledLines, '');
   }
