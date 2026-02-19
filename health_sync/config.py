@@ -23,10 +23,12 @@ class OuraConfig:
     # OAuth2 (Authorization Code + refresh token)
     client_id: str | None = None
     client_secret: str | None = None
+    authorize_url: str = "https://moi.ouraring.com/oauth/v2/ext/oauth-authorize"
+    token_url: str = "https://moi.ouraring.com/oauth/v2/ext/oauth-token"
     # Oura's OAuth authorize endpoint rejects `http://127.0.0.1/...` with
     # `400 invalid_request`; `http://localhost/...` works for local flows.
-    redirect_uri: str = "http://localhost:8484/callback"
-    scopes: str = "personal daily sleep workout heartrate tag session spo2"
+    redirect_uri: str = "http://localhost:8080/callback"
+    scopes: str = "extapi:daily extapi:heartrate extapi:personal extapi:workout extapi:session extapi:tag extapi:spo2"
 
     # Sync tuning
     start_date: str = "2010-01-01"
@@ -238,6 +240,8 @@ def load_config(path: str | Path | None = None) -> LoadedConfig:
         enabled=oura_enabled if oura_enabled is not None else OuraConfig().enabled,
         client_id=_get_str(raw_oura, "client_id"),
         client_secret=_get_str(raw_oura, "client_secret"),
+        authorize_url=_get_str(raw_oura, "authorize_url") or OuraConfig().authorize_url,
+        token_url=_get_str(raw_oura, "token_url") or OuraConfig().token_url,
         redirect_uri=_get_str(raw_oura, "redirect_uri") or OuraConfig().redirect_uri,
         scopes=_get_str(raw_oura, "scopes") or OuraConfig().scopes,
         start_date=_get_str(raw_oura, "start_date") or OuraConfig().start_date,

@@ -197,6 +197,7 @@ class OAuthResult:
     code: str
     state: str | None
     error: str | None
+    issuer: str | None = None
 
 
 def _oauth_result_from_paste(raw: str) -> OAuthResult | None:
@@ -229,8 +230,9 @@ def _oauth_result_from_paste(raw: str) -> OAuthResult | None:
         code = (qs.get("code") or [None])[0]
         state = (qs.get("state") or [None])[0]
         error = (qs.get("error") or [None])[0]
-        if code is not None or state is not None or error is not None:
-            return OAuthResult(code=code or "", state=state, error=error)
+        issuer = (qs.get("iss") or [None])[0] or (qs.get("issuer") or [None])[0]
+        if code is not None or state is not None or error is not None or issuer is not None:
+            return OAuthResult(code=code or "", state=state, error=error, issuer=issuer)
 
     if looks_structured:
         # User pasted URL/query-looking input but there was no recognizable OAuth field.
@@ -239,7 +241,7 @@ def _oauth_result_from_paste(raw: str) -> OAuthResult | None:
     # Fallback: treat paste as a raw code string.
     if any(ch.isspace() for ch in s):
         return None
-    return OAuthResult(code=s, state=None, error=None)
+    return OAuthResult(code=s, state=None, error=None, issuer=None)
 
 
 def oauth_listen_for_code(
@@ -253,13 +255,14 @@ def oauth_listen_for_code(
     result: dict[str, Any] = {}
     result_lock = threading.Lock()
 
-    def _set_result(*, code: str | None, state: str | None, error: str | None) -> None:
+    def _set_result(*, code: str | None, state: str | None, error: str | None, issuer: str | None) -> None:
         with result_lock:
             if event.is_set():
                 return
             result["code"] = code
             result["state"] = state
             result["error"] = error
+            result["issuer"] = issuer
             event.set()
 
     class Handler(BaseHTTPRequestHandler):
@@ -280,6 +283,7 @@ def oauth_listen_for_code(
                 code=(qs.get("code") or [None])[0],
                 state=(qs.get("state") or [None])[0],
                 error=(qs.get("error") or [None])[0],
+                issuer=(qs.get("iss") or [None])[0] or (qs.get("issuer") or [None])[0],
             )
 
             self.send_response(200)
@@ -300,7 +304,7 @@ def oauth_listen_for_code(
             if parsed is None:
                 print("Input did not contain a recognizable OAuth callback URL or code; still waiting...")
                 continue
-            _set_result(code=parsed.code, state=parsed.state, error=parsed.error)
+            _set_result(code=parsed.code, state=parsed.state, error=parsed.error, issuer=parsed.issuer)
             return
 
     httpd = HTTPServer((listen_host, listen_port), Handler)
@@ -319,8 +323,18 @@ def oauth_listen_for_code(
             raise TimeoutError("Timed out waiting for OAuth redirect or manual code input")
         code = result.get("code")
         if not code:
-            return OAuthResult(code="", state=result.get("state"), error=result.get("error") or "missing_code")
-        return OAuthResult(code=code, state=result.get("state"), error=result.get("error"))
+            return OAuthResult(
+                code="",
+                state=result.get("state"),
+                error=result.get("error") or "missing_code",
+                issuer=result.get("issuer"),
+            )
+        return OAuthResult(
+            code=code,
+            state=result.get("state"),
+            error=result.get("error"),
+            issuer=result.get("issuer"),
+        )
     finally:
         httpd.shutdown()
         httpd.server_close()

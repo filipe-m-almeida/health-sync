@@ -1,58 +1,62 @@
 ---
 name: health-sync
-description: Set up and operate health-sync in a dedicated health workspace (config/bootstrap, provider-by-provider auth, sync/status checks) and analyze the SQLite cache for Oura, Withings, Hevy, Strava, and Eight Sleep.
+description: Set up and operate health-sync in a dedicated health workspace (preflight checks, config/bootstrap, provider auth, sync/status checks) and analyze the SQLite cache for Oura, Withings, Hevy, Strava, and Eight Sleep.
 ---
 
 # Health Sync Setup + Analysis
-
-Use this skill when the user needs help with `health-sync` setup, provider onboarding/auth, sync execution, or SQL/data debugging.
 
 ## Default Behavior
 
 - If the user asks to set up or initialize `health-sync`, follow **Setup Workflow**.
 - If the user asks data questions on an existing DB, follow **Analysis Workflow**.
-- Setup sequence is: `init` once, `auth` providers one-by-one, then `sync` only on demand (or heartbeat automation).
+- Setup sequence is: preflight, `init` once, provider auth/setup one-by-one, then `sync` only on demand.
 - Never print secrets or query raw token values from `oauth_tokens`.
+- Accept natural user input (plain text, copied URL, screenshot transcription). Ask for strict formats only when technically required.
 
 ## Setup Workflow
 
-Use this workflow for first-time setup in OpenClaw.
+### 0) Run mandatory preflight before auth/setup
 
-### 0) Install `health-sync` first (required)
+Do this before asking the user for any provider credentials:
 
-Before any init/auth/sync steps, install from GitHub:
+1. Verify CLI/runtime:
+   - `python -m health_sync --help` (or `python3 -m health_sync --help` when `python` alias is absent)
+2. Resolve workspace and expected paths from `pwd`:
+   - `<workspace>/health/health-sync.toml`
+   - `<workspace>/health/health.sqlite`
+3. If CLI or paths are missing:
+   - run install/bootstrap flow first
+   - do not continue into auth steps until preflight passes
 
-- `pip install https://github.com/filipe-m-almeida/health-sync.git`
-- `python -m health_sync --help`
+Use exact command snippets from `references/setup.md`.
 
-If `python -m health_sync` fails after install, stop and fix the Python environment before continuing.
+### 1) Install/bootstrap only if preflight fails
 
-### 1) Resolve workspace paths and CLI command
+- Install from GitHub:
+  - `pip install https://github.com/filipe-m-almeida/health-sync.git`
+- Re-run preflight checks.
+- If `python -m health_sync` / `python3 -m health_sync` still fails, stop and fix Python environment first.
 
-- Treat the agent's current working directory (`pwd`) as the active workspace root.
-- Create and use a `health/` directory under that workspace root.
-- Config path: `<workspace-root>/health/health-sync.toml`
-- DB path: `<workspace-root>/health/health.sqlite`
-- Repo root: use `git rev-parse --show-toplevel` when available.
+### 2) Initialize config + DB
 
-Command preference:
+1. Create `<workspace>/health/` if missing.
+2. Run `init` via `HS_CMD` wrapper from `references/setup.md` with explicit `--config` and `--db`.
+3. Confirm both files exist:
+   - `<workspace>/health/health-sync.toml`
+   - `<workspace>/health/health.sqlite`
 
-1. Use `python -m health_sync`.
-2. Use `uv run python -m health_sync` only if explicitly working from a local checkout.
+### 3) Apply onboarding UX standard (required)
 
-### 2) Initialize workspace files
+For guided provider setup:
 
-Perform these steps in order:
+1. One action per message.
+2. Fully populated copy/paste command/URL once user provides values (no unresolved placeholders).
+3. State the exact expected artifact/output for each step.
+4. On errors, ask only for the minimum artifact needed (for OAuth: full callback URL or full terminal error text).
 
-1. Create the health workspace directory if missing.
-2. Run `python -m health_sync init` with explicit config and DB path.
-3. Confirm `<health-dir>/health-sync.toml` and `<health-dir>/health.sqlite` now exist.
+### 4) Provider sequencing pattern
 
-Reference commands and file-edit checklist are in `references/setup.md`.
-
-### 3) Provider-by-provider initialization (required interaction pattern)
-
-Ask the user one provider at a time, in this order:
+Ask exactly one yes/no question per provider, in this order:
 
 1. `oura`
 2. `withings`
@@ -60,71 +64,94 @@ Ask the user one provider at a time, in this order:
 4. `eightsleep`
 5. `hevy`
 
-For each provider:
+If no: keep/set `enabled = false` and continue.
+If yes: complete that provider setup before moving to the next.
 
-- Ask a direct yes/no question: "Initialize `<provider>` now?"
-- If user declines: keep/set `enabled = false` and continue to the next provider.
-- If user accepts: run that provider's setup/auth flow before moving on (`auth` scaffolds provider config and enables it).
+### 5) OAuth providers (`oura`, `withings`, `strava`)
 
-Provider-specific details are in `references/setup.md`.
+For each enabled OAuth provider:
 
-### 4) OAuth providers (interactive auth flow)
+1. Guide user through app setup URL(s) from `references/setup.md`.
+2. Collect and confirm credentials as exact text:
+   - `client_id`
+   - `client_secret`
+3. Set exact redirect URI in provider app and config.
+4. Run interactive auth command:
+   - run `auth <provider>` via `HS_CMD` wrapper from `references/setup.md`
+5. Collect final callback URL (or `code`) and send to command stdin.
+6. Confirm token persistence success.
+7. Validate with one real provider API check from `references/setup.md`.
 
-OAuth-style providers here are `oura`, `withings`, and `strava`.
+Important OAuth callout:
 
-For each OAuth provider the user enables:
+- Authorize URL uses `client_id` + exact `redirect_uri` only.
+- Token exchange uses `client_id` + `client_secret` + `code`.
 
-1. Use `references/setup.md` to guide user with official provider URLs and exact click flow to create/find OAuth credentials.
-2. Save `client_id`, `client_secret`, and redirect URI in config.
-3. Start auth command in an interactive terminal session:
-   - `python -m health_sync --config <config> --db <db> auth <provider>`
-4. CLI prints an auth URL. Ask user to open/click it and complete consent.
-5. Ask user to paste the final callback URL (or just `code`) back in chat.
-6. Send pasted callback URL/code to the running auth command stdin.
-7. Confirm token was stored successfully.
+If token exchange fails after an endpoint mismatch or `invalid_grant`:
 
-Important: `health-sync` auth commands accept either browser redirect or manual pasted callback URL/code.
+- request a fresh authorization code immediately
+- perform one immediate retry at the correct token endpoint
 
-### 5) Eight Sleep special handling
+### 6) Oura-specific rules (critical)
 
-Eight Sleep uses password-grant auth flow. Always prefill these client credentials before auth if user did not override them:
+- Oura is OAuth2-only in this workflow (no personal token setup path).
+- Use Oura app console:
+  - `https://developer.ouraring.com/applications`
+- Default redirect URI for this setup:
+  - `http://localhost:8080/callback`
+- Use issuer-era OAuth endpoints/scopes from `references/setup.md`.
+- Before user clicks authorize:
+  - tell them that an authorize page error can still produce a valid callback URL
+  - if that happens, they should still copy and send the full callback URL
 
-- `client_id = "0894c7f33bb94800a03f1f4df13a4f38"`
-- `client_secret = "f0954a3ed5763ba3d06834c73731a32f15f168f47d4f164751275def86db0c76"`
+### 7) Eight Sleep-specific rules
 
-Then collect `email` + `password` (or `access_token`) and run:
+- Validate credentials first with:
+  - `POST https://client-api.8slp.net/v1/login`
+- If two password retries fail with the same credential error:
+  - switch to a single recovery step:
+    - user logs into Eight Sleep app/web
+    - set/reset password once
+    - paste the new password
+    - retry auth flow
 
-- `python -m health_sync --config <config> --db <db> auth eightsleep`
+### 8) Hevy-specific rules
 
-No provider developer-console app creation is required for Eight Sleep in this flow.
+- Start with source-of-truth link:
+  - `https://hevy.com/settings?developer`
+- Confirm Hevy Pro requirement before deeper setup.
+- Validate key with:
+  - `GET /v1/user/info`
+  - `GET /v1/workouts/count`
+- After routine creation, return:
+  - direct web link: `https://hevy.com/routine/<id>`
+  - fallback app navigation paths from `references/setup.md`
 
-### 6) Validate unattended CLI setup
+### 9) Post-setup validation
 
 After provider onboarding:
 
-1. Run `python -m health_sync --config <config> --db <db> providers`.
-2. Run `python -m health_sync --config <config> --db <db> status`.
-3. Optionally run `python -m health_sync --config <config> --db <db> sync --providers <enabled providers...>`.
-4. Report any provider errors with concrete remediation steps (missing credentials, disabled provider, callback mismatch).
-
-Run sync only on user request (or periodic heartbeat workflows).
+1. `providers` via `HS_CMD` wrapper from `references/setup.md`
+2. `status` via `HS_CMD` wrapper from `references/setup.md`
+3. Run `sync` only when user asks.
 
 ## Analysis Workflow
 
-When setup is done and user needs data help:
+When setup is complete and user asks data questions:
 
-1. Read provider reference file first.
+1. Read provider schema reference first.
 2. Query `records` / `sync_state` / `sync_runs` as needed.
 3. Keep SQL provider-aware (resource semantics vary).
-4. Avoid printing secrets from `oauth_tokens`.
+4. For Hevy trend/report analysis, apply configured quality cutoff from `references/hevy.md` when present.
+5. Avoid printing secrets from `oauth_tokens`.
 
 ## References
 
-Read only what is needed for the task:
+Load only the file needed for the active task:
 
-- Setup + auth checklist: `references/setup.md`
+- Setup + auth + validation checklist: `references/setup.md`
 - Oura schema: `references/oura.md`
 - Withings schema: `references/withings.md`
-- Hevy schema: `references/hevy.md`
+- Hevy schema + quality cutoff/query patterns: `references/hevy.md`
 - Strava schema: `references/strava.md`
 - Eight Sleep schema: `references/eightsleep.md`

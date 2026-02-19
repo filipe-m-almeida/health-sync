@@ -80,6 +80,15 @@ class OAuthPasteParsingTests(unittest.TestCase):
         self.assertEqual(parsed.code, "xyz789")
         self.assertEqual(parsed.state, "s2")
 
+    def test_parses_callback_issuer_when_present(self) -> None:
+        parsed = _oauth_result_from_paste(
+            "http://localhost:8080/callback?code=c1&iss=https%3A%2F%2Fmoi.ouraring.com%2Foauth%2Fv2%2Fext%2Foauth-anonymous"
+        )
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.code, "c1")
+        self.assertEqual(parsed.issuer, "https://moi.ouraring.com/oauth/v2/ext/oauth-anonymous")
+
     def test_parses_raw_code_fallback(self) -> None:
         parsed = _oauth_result_from_paste("plain-code-token")
         self.assertIsNotNone(parsed)

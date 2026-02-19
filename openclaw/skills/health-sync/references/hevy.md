@@ -9,6 +9,11 @@ At a glance:
 - Resources: `workouts`, `workout_events`
 - Storage model: one row per workout (plus optional audit/event rows), raw JSON in `payload_json`
 
+Data-quality note:
+
+- If the user identifies a known cleanup/correction date, apply a cutoff when doing trend/report analysis.
+- Session baseline from setup errata: `2026-02-12` onward is trusted.
+
 ## Resource Map
 
 ### `workouts`
@@ -88,7 +93,9 @@ select
   json_extract(payload_json, '$.title') as title,
   json_extract(payload_json, '$.updated_at') as updated_at
 from records
-where provider = 'hevy' and resource = 'workouts'
+where provider = 'hevy'
+  and resource = 'workouts'
+  and start_time >= '2026-02-12'
 order by start_time desc
 limit 50;
 ```
@@ -98,7 +105,9 @@ Workouts per month:
 ```sql
 select substr(start_time, 1, 7) as month, count(*) as workouts
 from records
-where provider = 'hevy' and resource = 'workouts'
+where provider = 'hevy'
+  and resource = 'workouts'
+  and start_time >= '2026-02-12'
 group by month
 order by month;
 ```
@@ -109,7 +118,9 @@ Top exercises (by appearance in workouts):
 with workouts as (
   select record_id, payload_json
   from records
-  where provider = 'hevy' and resource = 'workouts'
+  where provider = 'hevy'
+    and resource = 'workouts'
+    and start_time >= '2026-02-12'
 ),
 exercises as (
   select
@@ -131,7 +142,9 @@ Total lifted volume approximation (sum of weight_kg * reps for strength sets):
 with workouts as (
   select record_id, start_time, payload_json
   from records
-  where provider = 'hevy' and resource = 'workouts'
+  where provider = 'hevy'
+    and resource = 'workouts'
+    and start_time >= '2026-02-12'
 ),
 sets as (
   select
@@ -152,4 +165,3 @@ group by day
 order by day desc
 limit 30;
 ```
-

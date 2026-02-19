@@ -10,7 +10,8 @@ import requests
 
 from health_sync.config import AppConfig, Config, LoadedConfig, OuraConfig
 from health_sync.db import HealthSyncDb
-from health_sync.providers.oura import _oura_refresh_if_needed, oura_sync
+from health_sync.providers.oura import _oura_refresh_if_needed, oura_auth, oura_sync
+from health_sync.util import OAuthResult
 
 
 class OuraSyncWindowTests(unittest.TestCase):
@@ -153,6 +154,83 @@ class OuraAuthRefreshTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(RuntimeError, "missing `refresh_token`"):
                     _oura_refresh_if_needed(db, cfg, requests.Session())
+
+
+class OuraAuthEndpointResolutionTests(unittest.TestCase):
+    def _loaded_cfg(self, db_path: str) -> LoadedConfig:
+        return LoadedConfig(
+            path=Path("/tmp/health-sync.toml"),
+            exists=True,
+            config=Config(
+                app=AppConfig(db=db_path),
+                oura=OuraConfig(
+                    enabled=True,
+                    client_id="oura-client",
+                    client_secret="oura-secret",
+                    redirect_uri="http://localhost:8080/callback",
+                ),
+            ),
+        )
+
+    def test_auth_uses_oidc_discovered_token_endpoint_when_callback_has_issuer(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = str(Path(td) / "health.sqlite")
+            cfg = self._loaded_cfg(db_path)
+
+            post_urls: list[str] = []
+
+            def _fake_request_json(  # noqa: ANN202
+                _sess,
+                method,
+                url,
+                *,
+                headers=None,  # noqa: ARG001
+                params=None,  # noqa: ARG001
+                data=None,  # noqa: ARG001
+                json_data=None,  # noqa: ARG001
+                timeout_s=60,  # noqa: ARG001
+                max_retries=5,  # noqa: ARG001
+            ):
+                if method == "GET" and str(url).endswith("/.well-known/openid-configuration"):
+                    return {
+                        "authorization_endpoint": "https://moi.ouraring.com/oauth/v2/ext/oauth-authorize",
+                        "token_endpoint": "https://moi.ouraring.com/oauth/v2/ext/oauth-token",
+                    }
+                if method == "POST":
+                    post_urls.append(str(url))
+                    return {
+                        "access_token": "oura-access",
+                        "refresh_token": "oura-refresh",
+                        "token_type": "Bearer",
+                        "scope": "extapi:daily",
+                        "expires_in": 3600,
+                    }
+                raise AssertionError(f"Unexpected request: {method} {url}")
+
+            with HealthSyncDb(db_path) as db:
+                db.init()
+                with (
+                    patch("health_sync.providers.oura.request_json", side_effect=_fake_request_json),
+                    patch("health_sync.providers.oura.open_in_browser"),
+                    patch(
+                        "health_sync.providers.oura.oauth_listen_for_code",
+                        return_value=OAuthResult(
+                            code="auth-code",
+                            state=None,
+                            error=None,
+                            issuer="https://moi.ouraring.com/oauth/v2/ext/oauth-anonymous",
+                        ),
+                    ),
+                ):
+                    oura_auth(db, cfg)
+
+                self.assertEqual(post_urls, ["https://moi.ouraring.com/oauth/v2/ext/oauth-token"])
+                tok = db.get_oauth_token("oura")
+                self.assertIsNotNone(tok)
+                assert tok is not None
+                self.assertEqual(tok["access_token"], "oura-access")
+                self.assertEqual(tok["extra"]["token_endpoint"], "https://moi.ouraring.com/oauth/v2/ext/oauth-token")
+                self.assertEqual(tok["extra"]["issuer"], "https://moi.ouraring.com/oauth/v2/ext/oauth-anonymous")
 
 
 if __name__ == "__main__":

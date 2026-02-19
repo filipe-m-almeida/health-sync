@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import secrets
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from urllib.parse import quote, urlencode, urlparse
 
 import requests
@@ -24,19 +25,102 @@ from ..util import (
 
 OURA_PROVIDER = "oura"
 OURA_BASE = "https://api.ouraring.com"
-OURA_OAUTH_AUTHORIZE = "https://cloud.ouraring.com/oauth/authorize"
-OURA_OAUTH_TOKEN = "https://api.ouraring.com/oauth/token"
+OURA_OAUTH_AUTHORIZE_DEFAULT = "https://moi.ouraring.com/oauth/v2/ext/oauth-authorize"
+OURA_OAUTH_TOKEN_DEFAULT = "https://moi.ouraring.com/oauth/v2/ext/oauth-token"
 
 
 def _oura_default_redirect_uri() -> str:
     # Oura accepts `http://localhost/...` for local redirect URIs but rejects
     # `http://127.0.0.1/...` with `400 invalid_request`.
-    return "http://localhost:8484/callback"
+    return "http://localhost:8080/callback"
 
 
 def _oura_scopes(cfg: LoadedConfig) -> str:
     # Keep it broad; users can override if their app is configured with different scopes.
     return cfg.config.oura.scopes
+
+
+def _oura_authorize_base(cfg: LoadedConfig) -> str:
+    return cfg.config.oura.authorize_url or OURA_OAUTH_AUTHORIZE_DEFAULT
+
+
+def _oura_token_base(cfg: LoadedConfig) -> str:
+    return cfg.config.oura.token_url or OURA_OAUTH_TOKEN_DEFAULT
+
+
+def _oidc_discovery_urls(issuer: str) -> list[str]:
+    iss = issuer.strip().rstrip("/")
+    if not iss:
+        return []
+
+    parsed = urlparse(iss)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return []
+
+    out: list[str] = [f"{iss}/.well-known/openid-configuration"]
+    # Oura callbacks may include an anonymous issuer path segment that differs
+    # from the token/authorize endpoint base by one path element.
+    if parsed.path.endswith("/oauth-anonymous"):
+        parent = iss[: -len("/oauth-anonymous")]
+        out.append(f"{parent}/.well-known/openid-configuration")
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for u in out:
+        if u in seen:
+            continue
+        seen.add(u)
+        deduped.append(u)
+    return deduped
+
+
+def _oura_discover_endpoints(
+    sess: requests.Session,
+    *,
+    issuer: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    if not issuer:
+        return None, None, None
+
+    for discovery_url in _oidc_discovery_urls(issuer):
+        try:
+            discovery = request_json(sess, "GET", discovery_url, max_retries=1)
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(discovery, dict):
+            continue
+
+        authorize = discovery.get("authorization_endpoint")
+        token = discovery.get("token_endpoint")
+        authorize_s = authorize.strip() if isinstance(authorize, str) and authorize.strip() else None
+        token_s = token.strip() if isinstance(token, str) and token.strip() else None
+        if token_s:
+            return authorize_s, token_s, discovery_url
+
+    return None, None, None
+
+
+def _oura_resolve_token_endpoint(
+    sess: requests.Session,
+    cfg: LoadedConfig,
+    *,
+    issuer: str | None = None,
+    token_extra: dict[str, Any] | None = None,
+) -> tuple[str, str | None]:
+    if token_extra:
+        saved_endpoint = token_extra.get("token_endpoint")
+        if isinstance(saved_endpoint, str) and saved_endpoint.strip():
+            return saved_endpoint.strip(), None
+        if issuer is None:
+            saved_issuer = token_extra.get("issuer")
+            if isinstance(saved_issuer, str) and saved_issuer.strip():
+                issuer = saved_issuer.strip()
+
+    _auth, discovered_token, discovery_url = _oura_discover_endpoints(sess, issuer=issuer)
+    if discovered_token:
+        return discovered_token, discovery_url
+
+    return _oura_token_base(cfg), None
 
 
 def _oura_redirect(cfg: LoadedConfig) -> tuple[str, int, str]:
@@ -60,10 +144,12 @@ def oura_auth(db: HealthSyncDb, cfg: LoadedConfig, *, listen_host: str = "127.0.
 
     state = secrets.token_urlsafe(16)
     scope = _oura_scopes(cfg)
+    authorize_base = _oura_authorize_base(cfg)
 
-    auth_url = f"{OURA_OAUTH_AUTHORIZE}?{urlencode({'response_type': 'code', 'client_id': client_id, 'redirect_uri': redirect_uri, 'scope': scope, 'state': state}, quote_via=quote)}"
+    auth_url = f"{authorize_base}?{urlencode({'response_type': 'code', 'client_id': client_id, 'redirect_uri': redirect_uri, 'scope': scope, 'state': state}, quote_via=quote)}"
 
     print("Open this URL to authorize Oura:")
+    print("Authorize URL uses `client_id` + exact `redirect_uri`; `client_secret` is only used in token exchange.")
     print(auth_url)
     open_in_browser(auth_url)
 
@@ -74,20 +160,33 @@ def oura_auth(db: HealthSyncDb, cfg: LoadedConfig, *, listen_host: str = "127.0.
         raise RuntimeError("Oura auth failed: state mismatch")
 
     sess = requests.Session()
-    token = request_json(
-        sess,
-        "POST",
-        OURA_OAUTH_TOKEN,
-        headers={
-            "Authorization": basic_auth_header(client_id, client_secret),
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        data={
-            "grant_type": "authorization_code",
-            "code": res.code,
-            "redirect_uri": redirect_uri,
-        },
-    )
+    token_endpoint, discovery_url = _oura_resolve_token_endpoint(sess, cfg, issuer=res.issuer)
+    if discovery_url:
+        print(f"Using Oura OIDC discovery endpoint: {discovery_url}")
+        print(f"Using Oura token endpoint: {token_endpoint}")
+
+    try:
+        token = request_json(
+            sess,
+            "POST",
+            token_endpoint,
+            headers={
+                "Authorization": basic_auth_header(client_id, client_secret),
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data={
+                "grant_type": "authorization_code",
+                "code": res.code,
+                "redirect_uri": redirect_uri,
+            },
+        )
+    except RuntimeError as e:
+        msg = str(e)
+        if "invalid_grant" in msg or "invalid_request" in msg:
+            raise RuntimeError(
+                f"{msg}. Oura auth codes are short-lived and single-use. Request a fresh code and retry once at {token_endpoint}."
+            ) from e
+        raise
 
     access_token = token["access_token"]
     refresh_token = token.get("refresh_token")
@@ -98,6 +197,13 @@ def oura_auth(db: HealthSyncDb, cfg: LoadedConfig, *, listen_host: str = "127.0.
     if isinstance(expires_in, int):
         expires_at = dt_to_iso_z(datetime.now(UTC) + timedelta(seconds=int(expires_in)))
 
+    extra = {k: v for k, v in token.items() if k not in {"access_token", "refresh_token", "token_type", "scope", "expires_in"}}
+    extra["token_endpoint"] = token_endpoint
+    if res.issuer:
+        extra["issuer"] = res.issuer
+    if discovery_url:
+        extra["oidc_discovery_url"] = discovery_url
+
     db.set_oauth_token(
         provider=OURA_PROVIDER,
         access_token=access_token,
@@ -105,7 +211,7 @@ def oura_auth(db: HealthSyncDb, cfg: LoadedConfig, *, listen_host: str = "127.0.
         token_type=token_type,
         scope=scope_resp,
         expires_at=expires_at,
-        extra={k: v for k, v in token.items() if k not in {"access_token", "refresh_token", "token_type", "scope", "expires_in"}},
+        extra=extra,
     )
     print("Stored Oura OAuth token in DB.")
 
@@ -121,6 +227,7 @@ def _oura_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: requests.
     access_token = tok["access_token"]
     refresh_token = tok.get("refresh_token")
     expires_at = tok.get("expires_at")
+    token_extra = tok.get("extra") if isinstance(tok.get("extra"), dict) else {}
 
     if not refresh_token:
         raise RuntimeError(
@@ -138,20 +245,29 @@ def _oura_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: requests.
 
     client_id = require_str(cfg, cfg.config.oura.client_id, key="oura.client_id")
     client_secret = require_str(cfg, cfg.config.oura.client_secret, key="oura.client_secret")
+    token_endpoint, discovery_url = _oura_resolve_token_endpoint(sess, cfg, token_extra=token_extra)
 
-    token = request_json(
-        sess,
-        "POST",
-        OURA_OAUTH_TOKEN,
-        headers={
-            "Authorization": basic_auth_header(client_id, client_secret),
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-        },
-    )
+    try:
+        token = request_json(
+            sess,
+            "POST",
+            token_endpoint,
+            headers={
+                "Authorization": basic_auth_header(client_id, client_secret),
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            },
+        )
+    except RuntimeError as e:
+        msg = str(e)
+        if "invalid_grant" in msg or "invalid_request" in msg:
+            raise RuntimeError(
+                f"{msg}. Oura refresh token appears invalid for current endpoint. Run `health-sync auth oura` to get a fresh code/token pair."
+            ) from e
+        raise
 
     new_access = token["access_token"]
     new_refresh = token.get("refresh_token") or refresh_token
@@ -162,6 +278,12 @@ def _oura_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: requests.
     if isinstance(expires_in, int):
         new_expires_at = dt_to_iso_z(datetime.now(UTC) + timedelta(seconds=int(expires_in)))
 
+    merged_extra = {k: v for k, v in token_extra.items() if k not in {"access_token", "refresh_token", "token_type", "scope", "expires_in"}}
+    merged_extra.update({k: v for k, v in token.items() if k not in {"access_token", "refresh_token", "token_type", "scope", "expires_in"}})
+    merged_extra["token_endpoint"] = token_endpoint
+    if discovery_url:
+        merged_extra["oidc_discovery_url"] = discovery_url
+
     db.set_oauth_token(
         provider=OURA_PROVIDER,
         access_token=new_access,
@@ -169,7 +291,7 @@ def _oura_refresh_if_needed(db: HealthSyncDb, cfg: LoadedConfig, sess: requests.
         token_type=token_type,
         scope=scope_resp,
         expires_at=new_expires_at,
-        extra={k: v for k, v in token.items() if k not in {"access_token", "refresh_token", "token_type", "scope", "expires_in"}},
+        extra=merged_extra,
     )
     return new_access
 
