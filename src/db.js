@@ -83,9 +83,11 @@ export class HealthSyncDb {
     this._transactionDepth = 0;
     this._oauthMigrated = false;
     this._credsParseWarned = false;
+    this._stmtCache = new Map();
   }
 
   close() {
+    this._stmtCache.clear();
     this.conn.close();
   }
 
@@ -155,6 +157,15 @@ export class HealthSyncDb {
 
     this._normalizeLegacyTimestamps();
     this._migrateOAuthTokensToCredsFile();
+  }
+
+  _stmt(key, sql) {
+    let stmt = this._stmtCache.get(key);
+    if (!stmt) {
+      stmt = this.conn.prepare(sql);
+      this._stmtCache.set(key, stmt);
+    }
+    return stmt;
   }
 
   _normalizeLegacyTimestamps() {
@@ -267,7 +278,7 @@ export class HealthSyncDb {
   _listLegacyOAuthTokens() {
     let rows = [];
     try {
-      rows = this.conn.prepare('SELECT * FROM oauth_tokens ORDER BY provider ASC').all();
+      rows = this._stmt('oauth_tokens.list_legacy', 'SELECT * FROM oauth_tokens ORDER BY provider ASC').all();
     } catch {
       rows = [];
     }
@@ -352,7 +363,7 @@ export class HealthSyncDb {
     const migratedProviders = Object.keys(legacyTokens)
       .filter((provider) => this._normalizeStoredToken(provider, nextDoc.tokens?.[provider]));
     for (const provider of migratedProviders) {
-      this.conn.prepare('DELETE FROM oauth_tokens WHERE provider = ?').run(provider);
+      this._stmt('oauth_tokens.delete_provider', 'DELETE FROM oauth_tokens WHERE provider = ?').run(provider);
     }
   }
   _incrementRunStats(stats, op) {
@@ -414,13 +425,14 @@ export class HealthSyncDb {
     const normalizedUpdated = normalizeTimestamp(sourceUpdatedAt);
     const fetchedAt = utcNowIso();
 
-    const existing = this.conn
-      .prepare(`
+    const existing = this._stmt(
+      'records.select_for_upsert',
+      `
         SELECT payload_json, start_time, end_time, source_updated_at
         FROM records
         WHERE provider = ? AND resource = ? AND record_id = ?
-      `)
-      .get(provider, resource, recordId);
+      `,
+    ).get(provider, resource, recordId);
 
     let op = 'inserted';
     if (existing) {
@@ -436,7 +448,9 @@ export class HealthSyncDb {
       }
     }
 
-    this.conn.prepare(`
+    this._stmt(
+      'records.upsert',
+      `
       INSERT INTO records (
         provider, resource, record_id, start_time, end_time,
         source_updated_at, payload_json, fetched_at
@@ -451,7 +465,8 @@ export class HealthSyncDb {
         source_updated_at = excluded.source_updated_at,
         payload_json = excluded.payload_json,
         fetched_at = excluded.fetched_at
-    `).run({
+      `,
+    ).run({
       provider,
       resource,
       record_id: recordId,
@@ -467,9 +482,10 @@ export class HealthSyncDb {
   }
 
   deleteRecord(provider, resource, recordId, trackTarget = null) {
-    const result = this.conn
-      .prepare('DELETE FROM records WHERE provider = ? AND resource = ? AND record_id = ?')
-      .run(provider, resource, recordId);
+    const result = this._stmt(
+      'records.delete',
+      'DELETE FROM records WHERE provider = ? AND resource = ? AND record_id = ?',
+    ).run(provider, resource, recordId);
     if (result.changes > 0) {
       this._trackOperation('deleted', trackTarget);
       return true;
@@ -478,9 +494,10 @@ export class HealthSyncDb {
   }
 
   getSyncState(provider, resource) {
-    const row = this.conn
-      .prepare('SELECT * FROM sync_state WHERE provider = ? AND resource = ?')
-      .get(provider, resource);
+    const row = this._stmt(
+      'sync_state.get',
+      'SELECT * FROM sync_state WHERE provider = ? AND resource = ?',
+    ).get(provider, resource);
     if (!row) {
       return null;
     }
@@ -495,9 +512,10 @@ export class HealthSyncDb {
   }
 
   listSyncState() {
-    const rows = this.conn
-      .prepare('SELECT * FROM sync_state ORDER BY provider ASC, resource ASC')
-      .all();
+    const rows = this._stmt(
+      'sync_state.list',
+      'SELECT * FROM sync_state ORDER BY provider ASC, resource ASC',
+    ).all();
     return rows.map((row) => ({
       provider: row.provider,
       resource: row.resource,
@@ -513,7 +531,9 @@ export class HealthSyncDb {
     const updatedAt = utcNowIso();
     const extraJson = extra === null || extra === undefined ? null : stableJsonStringify(extra);
 
-    this.conn.prepare(`
+    this._stmt(
+      'sync_state.upsert',
+      `
       INSERT INTO sync_state (provider, resource, watermark, cursor, extra_json, updated_at)
       VALUES (@provider, @resource, @watermark, @cursor, @extra_json, @updated_at)
       ON CONFLICT(provider, resource)
@@ -522,7 +542,8 @@ export class HealthSyncDb {
         cursor = excluded.cursor,
         extra_json = excluded.extra_json,
         updated_at = excluded.updated_at
-    `).run({
+      `,
+    ).run({
       provider,
       resource,
       watermark: normalizedWatermark,
@@ -543,9 +564,10 @@ export class HealthSyncDb {
       return fromCreds;
     }
 
-    const row = this.conn
-      .prepare('SELECT * FROM oauth_tokens WHERE provider = ?')
-      .get(provider);
+    const row = this._stmt(
+      'oauth_tokens.get_provider',
+      'SELECT * FROM oauth_tokens WHERE provider = ?',
+    ).get(provider);
     if (!row) {
       return null;
     }
@@ -568,7 +590,7 @@ export class HealthSyncDb {
     }
 
     this._upsertCredsToken(provider, legacy);
-    this.conn.prepare('DELETE FROM oauth_tokens WHERE provider = ?').run(provider);
+    this._stmt('oauth_tokens.delete_provider', 'DELETE FROM oauth_tokens WHERE provider = ?').run(provider);
     return legacy;
   }
 
@@ -602,7 +624,9 @@ export class HealthSyncDb {
 
   startSyncRun(provider, resource, watermarkBefore = null) {
     const startedAt = utcNowIso();
-    const result = this.conn.prepare(`
+    const result = this._stmt(
+      'sync_runs.start',
+      `
       INSERT INTO sync_runs (
         provider, resource, status, started_at, watermark_before,
         inserted_count, updated_count, deleted_count, unchanged_count
@@ -610,7 +634,8 @@ export class HealthSyncDb {
         @provider, @resource, 'running', @started_at, @watermark_before,
         0, 0, 0, 0
       )
-    `).run({
+      `,
+    ).run({
       provider,
       resource,
       started_at: startedAt,
@@ -628,7 +653,9 @@ export class HealthSyncDb {
     unchangedCount = 0,
     errorText = null,
   }) {
-    this.conn.prepare(`
+    this._stmt(
+      'sync_runs.finish',
+      `
       UPDATE sync_runs
       SET
         status = @status,
@@ -640,7 +667,8 @@ export class HealthSyncDb {
         unchanged_count = @unchanged_count,
         error_text = @error_text
       WHERE id = @id
-    `).run({
+      `,
+    ).run({
       id: runId,
       status,
       finished_at: utcNowIso(),
@@ -690,12 +718,15 @@ export class HealthSyncDb {
   }
 
   listRecentSyncRuns(limit = 20) {
-    const rows = this.conn.prepare(`
+    const rows = this._stmt(
+      'sync_runs.list_recent',
+      `
       SELECT *
       FROM sync_runs
       ORDER BY started_at DESC
       LIMIT ?
-    `).all(limit);
+      `,
+    ).all(limit);
 
     return rows.map((row) => ({
       id: row.id,
@@ -715,25 +746,30 @@ export class HealthSyncDb {
   }
 
   listRecordCounts() {
-    return this.conn.prepare(`
+    return this._stmt(
+      'records.list_counts',
+      `
       SELECT provider, resource, COUNT(*) AS count
       FROM records
       GROUP BY provider, resource
       ORDER BY provider ASC, resource ASC
-    `).all();
+      `,
+    ).all();
   }
 
   getRecordCount(provider, resource) {
-    const row = this.conn
-      .prepare('SELECT COUNT(*) AS count FROM records WHERE provider = ? AND resource = ?')
-      .get(provider, resource);
+    const row = this._stmt(
+      'records.count_by_resource',
+      'SELECT COUNT(*) AS count FROM records WHERE provider = ? AND resource = ?',
+    ).get(provider, resource);
     return Number(row?.count ?? 0);
   }
 
   getMaxRecordStartTime(provider, resource) {
-    const row = this.conn
-      .prepare('SELECT MAX(start_time) AS max_start_time FROM records WHERE provider = ? AND resource = ?')
-      .get(provider, resource);
+    const row = this._stmt(
+      'records.max_start_time',
+      'SELECT MAX(start_time) AS max_start_time FROM records WHERE provider = ? AND resource = ?',
+    ).get(provider, resource);
     return row?.max_start_time ? normalizeTimestamp(row.max_start_time) : null;
   }
 
