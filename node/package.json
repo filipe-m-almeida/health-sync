@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node ./bin/health-sync.js",
-    "check": "node --check ./bin/health-sync.js && node --check ./src/cli.js"
+    "check": "node --check ./bin/health-sync.js && node --check ./src/cli.js",
+    "test": "node --test ./tests/*.test.js"
   },
   "dependencies": {
     "@iarna/toml": "^2.2.5",

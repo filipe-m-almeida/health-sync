@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import {
   initConfigFile,
@@ -197,6 +196,14 @@ function resolveDbPath(overrideDbPath, loadedConfig) {
   return './health.sqlite';
 }
 
+function enableHint(providerId) {
+  const builtin = new Set(['oura', 'withings', 'hevy', 'strava', 'eightsleep']);
+  if (builtin.has(providerId)) {
+    return `[${providerId}].enabled = true`;
+  }
+  return `[plugins.${providerId}].enabled = true`;
+}
+
 function usage() {
   return [
     'Usage: health-sync [--config path] [--db path] <command> [options]',
@@ -254,25 +261,29 @@ async function cmdInitDb(parsed) {
 
 async function cmdAuth(parsed) {
   const configPath = path.resolve(parsed.configPath);
-
-  if (!fs.existsSync(configPath)) {
-    const dbPath = parsed.dbPath || './health.sqlite';
-    initConfigFile(configPath, dbPath);
-  }
+  const loaded = loadConfig(configPath);
+  const dbPath = resolveDbPath(parsed.dbPath, loaded);
+  initConfigFile(configPath, dbPath);
 
   scaffoldProviderConfig(configPath, parsed.options.provider);
 
   const context = await loadContext(configPath);
-  const dbPath = resolveDbPath(parsed.dbPath, context.loadedConfig);
   const db = openDb(dbPath);
 
   try {
     const plugin = context.providers.get(parsed.options.provider);
     if (!plugin) {
-      throw new Error(`Provider not found: ${parsed.options.provider}`);
+      const known = context.providers.size
+        ? Array.from(context.providers.keys()).sort().join(', ')
+        : '(none)';
+      throw new Error(
+        `Unknown provider \`${parsed.options.provider}\`. `
+        + `Available providers: ${known}. `
+        + 'Use `health-sync providers` to inspect discovery/config status.',
+      );
     }
     if (!plugin.supportsAuth) {
-      throw new Error(`Provider ${parsed.options.provider} does not support auth`);
+      throw new Error(`Provider \`${parsed.options.provider}\` does not support auth.`);
     }
 
     await plugin.auth(db, context.loadedConfig.data, context.helpers, {
@@ -298,33 +309,15 @@ async function cmdSync(parsed) {
   try {
     const discoveredIds = Array.from(context.providers.keys()).sort();
     const requested = parsed.options.providers.length ? parsed.options.providers : discoveredIds;
-
-    let failures = 0;
-    let successes = 0;
-
-    for (const providerId of requested) {
-      const plugin = context.providers.get(providerId);
-      if (!plugin) {
-        console.warn(`Provider ${providerId} is not available.`);
-        failures += 1;
-        continue;
-      }
-      if (!providerEnabled(context.loadedConfig.data, providerId)) {
-        console.log(`Skipping disabled provider ${providerId}.`);
-        continue;
-      }
-
-      try {
-        console.log(`Syncing ${providerId}...`);
-        await plugin.sync(db, context.loadedConfig.data, context.helpers, {
-          configPath,
-          dbPath,
-        });
-        console.log(`Sync complete: ${providerId}`);
-        successes += 1;
-      } catch (err) {
-        console.warn(`Sync failed for ${providerId}: ${err?.message || String(err)}`);
-        failures += 1;
+    if (parsed.options.providers.length) {
+      const unknown = requested.filter((id) => !context.providers.has(id));
+      if (unknown.length) {
+        const known = discoveredIds.length ? discoveredIds.join(', ') : '(none)';
+        throw new Error(
+          `Unknown provider(s): ${unknown.join(', ')}. `
+          + `Available providers: ${known}. `
+          + 'Use `health-sync providers` to inspect discovery/config status.',
+        );
       }
     }
 
@@ -332,18 +325,57 @@ async function cmdSync(parsed) {
       .filter(([, section]) => Boolean(section?.enabled))
       .map(([id]) => id)
       .filter((id) => !context.providers.has(id));
-
     for (const missingId of enabledConfiguredPluginIds) {
-      console.warn(`Configured plugin ${missingId} is enabled but was not loaded.`);
-      failures += 1;
+      console.warn(`WARNING: [plugins.${missingId}] is enabled but provider code was not discovered.`);
     }
 
-    if (failures > 0) {
+    const toSync = requested.filter((id) => providerEnabled(context.loadedConfig.data, id));
+    const skipped = requested.filter((id) => !providerEnabled(context.loadedConfig.data, id));
+    for (const providerId of skipped) {
+      console.log(`Skipping ${providerId}: disabled in config (set ${enableHint(providerId)}).`);
+    }
+
+    if (!toSync.length) {
+      if (!parsed.options.providers.length) {
+        console.log(
+          'No providers enabled; nothing to sync. '
+          + `Enable one or more providers in ${context.loadedConfig.path} `
+          + `(e.g. set ${enableHint('hevy')}).`,
+        );
+      } else if (requested.length) {
+        console.log('No enabled providers selected; nothing to sync.');
+      } else {
+        console.log('No providers specified; nothing to sync.');
+      }
+      return 0;
+    }
+
+    let successes = 0;
+    const failures = [];
+    for (const providerId of toSync) {
+      try {
+        await context.providers.get(providerId).sync(db, context.loadedConfig.data, context.helpers, {
+          configPath,
+          dbPath,
+        });
+        successes += 1;
+      } catch (err) {
+        failures.push(providerId);
+        console.warn(`WARNING: ${providerId} sync failed: ${err?.message || String(err)}`);
+      }
+    }
+
+    if (failures.length) {
+      console.warn(
+        `Sync completed with warnings (${failures.length}/${toSync.length} providers failed): `
+        + failures.join(', '),
+      );
+      if (successes === 0) {
+        console.warn('All selected providers failed.');
+      }
       return 1;
     }
-    if (successes === 0 && requested.length > 0) {
-      return 1;
-    }
+
     return 0;
   } finally {
     db.close();
@@ -430,22 +462,22 @@ export async function main(argv = process.argv.slice(2)) {
     }
 
     if (parsed.command === 'init') {
-      return cmdInit(parsed);
+      return await cmdInit(parsed);
     }
     if (parsed.command === 'init-db') {
-      return cmdInitDb(parsed);
+      return await cmdInitDb(parsed);
     }
     if (parsed.command === 'auth') {
-      return cmdAuth(parsed);
+      return await cmdAuth(parsed);
     }
     if (parsed.command === 'sync') {
-      return cmdSync(parsed);
+      return await cmdSync(parsed);
     }
     if (parsed.command === 'providers') {
-      return cmdProviders(parsed);
+      return await cmdProviders(parsed);
     }
     if (parsed.command === 'status') {
-      return cmdStatus(parsed);
+      return await cmdStatus(parsed);
     }
 
     console.error(`Unknown command: ${parsed.command}`);

@@ -180,11 +180,13 @@ async function eightsleepSync(db, config, helpers) {
 
   let mePayload;
   let meUserId = 'me';
+  let meUser = null;
 
   await db.syncRun('eightsleep', 'users_me', async () => {
     await db.transaction(async () => {
       mePayload = await requestJson(`${apiBase}/users/me`, { headers });
-      meUserId = String(mePayload?.user?.id || mePayload?.id || 'me');
+      meUser = mePayload?.user && typeof mePayload.user === 'object' ? mePayload.user : null;
+      meUserId = String(meUser?.id || mePayload?.id || 'me');
       const nowIso = utcNowIso();
       db.upsertRecord({
         provider: 'eightsleep',
@@ -201,11 +203,18 @@ async function eightsleepSync(db, config, helpers) {
     });
   });
 
-  const userIds = new Set([meUserId]);
+  const userIds = new Set();
+  if (meUserId !== 'me') {
+    userIds.add(meUserId);
+  }
 
   await db.syncRun('eightsleep', 'devices', async () => {
     await db.transaction(async () => {
-      const devices = Array.isArray(mePayload?.devices) ? mePayload.devices : [];
+      const devices = Array.isArray(meUser?.devices)
+        ? meUser.devices
+        : Array.isArray(mePayload?.devices)
+          ? mePayload.devices
+          : [];
       const nowIso = utcNowIso();
 
       for (const deviceEntry of devices) {

@@ -102,7 +102,8 @@ async function hevyInitialSync(db, cfg, apiKey) {
 async function hevyDeltaSync(db, cfg, apiKey) {
   const baseUrl = String(cfg.base_url || 'https://api.hevyapp.com').replace(/\/$/, '');
   const pageSize = clampPageSize(cfg.page_size);
-  const overlapSeconds = Math.max(0, Number.parseInt(String(cfg.overlap_seconds ?? 300), 10) || 300);
+  const parsedOverlap = Number.parseInt(String(cfg.overlap_seconds ?? 300), 10);
+  const overlapSeconds = Number.isFinite(parsedOverlap) ? Math.max(0, parsedOverlap) : 300;
 
   const state = db.getSyncState('hevy', 'workouts');
   const watermarkEpoch = toEpochSeconds(state?.watermark);
@@ -161,7 +162,7 @@ async function hevyDeltaSync(db, cfg, apiKey) {
                   endTime: shape.endTime,
                   sourceUpdatedAt: shape.sourceUpdatedAt,
                   payload: workout,
-                });
+                }, { provider: 'hevy', resource: 'workouts' });
               }
 
               const auditId = `updated:${workoutId || 'unknown'}:${eventTs || 'na'}`;
@@ -173,14 +174,14 @@ async function hevyDeltaSync(db, cfg, apiKey) {
                 endTime: null,
                 sourceUpdatedAt: eventTs,
                 payload: event,
-              });
+              }, { provider: 'hevy', resource: 'workout_events' });
               continue;
             }
 
             if (type === 'deleted') {
               const workoutId = event?.workout_id || event?.id || null;
               if (workoutId) {
-                db.deleteRecord('hevy', 'workouts', String(workoutId));
+                db.deleteRecord('hevy', 'workouts', String(workoutId), { provider: 'hevy', resource: 'workouts' });
               }
 
               const deletedTs = event?.deleted_at || eventTs;
@@ -193,7 +194,7 @@ async function hevyDeltaSync(db, cfg, apiKey) {
                 endTime: null,
                 sourceUpdatedAt: deletedTs,
                 payload: event,
-              });
+              }, { provider: 'hevy', resource: 'workout_events' });
               continue;
             }
 
@@ -206,7 +207,7 @@ async function hevyDeltaSync(db, cfg, apiKey) {
               endTime: null,
               sourceUpdatedAt: eventTs,
               payload: event,
-            });
+            }, { provider: 'hevy', resource: 'workout_events' });
           }
 
           const pageCount = Number.parseInt(String(response?.page_count ?? response?.pageCount ?? 0), 10) || 0;

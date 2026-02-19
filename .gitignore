@@ -26,3 +26,6 @@ ANALYSIS_INSTRUCTIONS.md
 build/
 dist/
 *.egg-info/
+
+# Node dependencies
+node/node_modules/

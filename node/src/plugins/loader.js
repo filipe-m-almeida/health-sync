@@ -143,24 +143,26 @@ export async function loadProviders(config, options = {}) {
       continue;
     }
     if (BUILTIN_PROVIDER_IDS.includes(configuredId)) {
-      console.warn(`Ignoring configured module override for built-in provider ${configuredId}`);
-      continue;
+      throw new Error(`Cannot override built-in provider \`${configuredId}\`.`);
     }
+
+    let plugin;
     try {
-      const plugin = await loadFromModuleSpec(moduleSpec, configuredId, cwd);
-      if (providers.has(plugin.id) && providers.get(plugin.id)?.source === 'builtin') {
-        console.warn(`Ignoring override attempt of built-in provider ${plugin.id}`);
-        continue;
-      }
-      providers.set(plugin.id, plugin);
-      metadata.set(plugin.id, {
-        source: plugin.source,
-        moduleSpec,
-        builtin: false,
-      });
+      plugin = await loadFromModuleSpec(moduleSpec, configuredId, cwd);
     } catch (err) {
-      console.warn(`Failed to load configured plugin ${configuredId} (${moduleSpec}): ${err.message}`);
+      throw new Error(`Failed to load configured plugin ${configuredId} (${moduleSpec}): ${err.message}`);
     }
+
+    if (providers.has(plugin.id) && providers.get(plugin.id)?.source === 'builtin') {
+      throw new Error(`Cannot override built-in provider \`${plugin.id}\`.`);
+    }
+
+    providers.set(plugin.id, plugin);
+    metadata.set(plugin.id, {
+      source: plugin.source,
+      moduleSpec,
+      builtin: false,
+    });
   }
 
   return {

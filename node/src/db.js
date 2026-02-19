@@ -178,23 +178,59 @@ export class HealthSyncDb {
     }
   }
 
-  _trackOperation(op) {
-    const top = this._runStatsStack[this._runStatsStack.length - 1];
-    if (!top) {
+  _incrementRunStats(stats, op) {
+    if (!stats) {
       return;
     }
     if (op === 'inserted') {
-      top.insertedCount += 1;
+      stats.insertedCount += 1;
     } else if (op === 'updated') {
-      top.updatedCount += 1;
+      stats.updatedCount += 1;
     } else if (op === 'deleted') {
-      top.deletedCount += 1;
+      stats.deletedCount += 1;
     } else if (op === 'unchanged') {
-      top.unchangedCount += 1;
+      stats.unchangedCount += 1;
     }
   }
 
-  upsertRecord({ provider, resource, recordId, startTime = null, endTime = null, sourceUpdatedAt = null, payload }) {
+  _trackOperation(op, target = null) {
+    let entry = null;
+    if (target && typeof target === 'object') {
+      const provider = typeof target.provider === 'string' ? target.provider : null;
+      const resource = typeof target.resource === 'string' ? target.resource : null;
+      if (provider && resource) {
+        for (let i = this._runStatsStack.length - 1; i >= 0; i -= 1) {
+          const candidate = this._runStatsStack[i];
+          if (candidate.provider === provider && candidate.resource === resource) {
+            entry = candidate;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!entry) {
+      entry = this._runStatsStack[this._runStatsStack.length - 1];
+    }
+    if (!entry) {
+      return;
+    }
+
+    this._incrementRunStats(entry.stats, op);
+  }
+
+  upsertRecord(
+    {
+      provider,
+      resource,
+      recordId,
+      startTime = null,
+      endTime = null,
+      sourceUpdatedAt = null,
+      payload,
+    },
+    trackTarget = null,
+  ) {
     const payloadJson = stableJsonStringify(payload);
     const normalizedStart = normalizeTimestamp(startTime);
     const normalizedEnd = normalizeTimestamp(endTime);
@@ -249,16 +285,16 @@ export class HealthSyncDb {
       fetched_at: fetchedAt,
     });
 
-    this._trackOperation(op);
+    this._trackOperation(op, trackTarget);
     return op;
   }
 
-  deleteRecord(provider, resource, recordId) {
+  deleteRecord(provider, resource, recordId, trackTarget = null) {
     const result = this.conn
       .prepare('DELETE FROM records WHERE provider = ? AND resource = ? AND record_id = ?')
       .run(provider, resource, recordId);
     if (result.changes > 0) {
-      this._trackOperation('deleted');
+      this._trackOperation('deleted', trackTarget);
       return true;
     }
     return false;
@@ -442,7 +478,8 @@ export class HealthSyncDb {
       unchangedCount: 0,
     };
 
-    this._runStatsStack.push(stats);
+    const entry = { provider, resource, stats };
+    this._runStatsStack.push(entry);
     let status = 'success';
     let errorText = null;
     try {
@@ -457,10 +494,10 @@ export class HealthSyncDb {
       this.finishSyncRun(runId, {
         status,
         watermarkAfter: stateAfter?.watermark ?? null,
-        insertedCount: stats.insertedCount,
-        updatedCount: stats.updatedCount,
-        deletedCount: stats.deletedCount,
-        unchangedCount: stats.unchangedCount,
+        insertedCount: entry.stats.insertedCount,
+        updatedCount: entry.stats.updatedCount,
+        deletedCount: entry.stats.deletedCount,
+        unchangedCount: entry.stats.unchangedCount,
         errorText,
       });
     }

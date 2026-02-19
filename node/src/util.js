@@ -137,7 +137,7 @@ export function parseRetryAfterSeconds(retryAfter) {
     return null;
   }
   if (typeof retryAfter === 'number' && Number.isFinite(retryAfter)) {
-    return Math.max(0, Math.floor(retryAfter));
+    return Math.max(1, Math.floor(retryAfter));
   }
   if (typeof retryAfter !== 'string') {
     return null;
@@ -147,14 +147,14 @@ export function parseRetryAfterSeconds(retryAfter) {
     return null;
   }
   if (/^\d+$/.test(trimmed)) {
-    return Math.max(0, Number.parseInt(trimmed, 10));
+    return Math.max(1, Number.parseInt(trimmed, 10));
   }
   const retryAt = Date.parse(trimmed);
   if (Number.isNaN(retryAt)) {
     console.warn(`Invalid Retry-After header value: ${retryAfter}`);
     return null;
   }
-  return Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+  return Math.max(1, Math.ceil((retryAt - Date.now()) / 1000));
 }
 
 function buildHttpError(method, url, response, parsedBody, rawText) {
@@ -189,8 +189,8 @@ export async function requestJson(url, options = {}) {
     json = undefined,
     data = undefined,
     timeoutMs = 30000,
-    retries = 3,
-    retryBackoffMs = 500,
+    retries = 5,
+    retryBackoffMs = 1000,
     expectedStatus = null,
   } = options;
 
@@ -264,8 +264,8 @@ export async function requestJson(url, options = {}) {
         const retryAfterHeader = response.headers.get('retry-after');
         const retryAfterSeconds = parseRetryAfterSeconds(retryAfterHeader);
         const delayMs = retryAfterSeconds !== null
-          ? retryAfterSeconds * 1000
-          : retryBackoffMs * (2 ** (attempt - 1));
+          ? Math.min(60000, Math.max(1000, retryAfterSeconds * 1000))
+          : Math.min(60000, retryBackoffMs * (2 ** (attempt - 1)));
         await sleep(delayMs);
         continue;
       }
@@ -295,7 +295,7 @@ export async function requestJson(url, options = {}) {
         || error?.cause?.code === 'ECONNRESET'
         || error?.cause?.code === 'ETIMEDOUT';
       if (attempt < maxAttempts && retryable) {
-        const delayMs = retryBackoffMs * (2 ** (attempt - 1));
+        const delayMs = Math.min(60000, retryBackoffMs * (2 ** (attempt - 1)));
         await sleep(delayMs);
         continue;
       }
@@ -321,14 +321,19 @@ export class OAuthResult {
 }
 
 function oauthResultFromQueryParams(params) {
-  const code = params.get('code') || null;
-  const state = params.get('state') || null;
-  const error = params.get('error') || null;
-  const issuer = params.get('iss') || params.get('issuer') || null;
-  if (!code && !error) {
+  const code = params.get('code');
+  const state = params.get('state');
+  const error = params.get('error');
+  const issuer = params.get('iss') || params.get('issuer');
+  if (code === null && state === null && error === null && issuer === null) {
     return null;
   }
-  return new OAuthResult({ code, state, error, issuer });
+  return new OAuthResult({
+    code: code || '',
+    state: state || null,
+    error: error || null,
+    issuer: issuer || null,
+  });
 }
 
 export function oauthResultFromPaste(text) {
@@ -340,37 +345,55 @@ export function oauthResultFromPaste(text) {
     return null;
   }
 
+  const parsedParamSets = [];
+  let looksStructured = false;
+
   if (/^https?:\/\//i.test(trimmed)) {
+    looksStructured = true;
     try {
       const url = new URL(trimmed);
-      return oauthResultFromQueryParams(url.searchParams);
+      if (url.searchParams.size > 0) {
+        parsedParamSets.push(url.searchParams);
+      }
+      if (url.hash && url.hash.length > 1) {
+        parsedParamSets.push(new URLSearchParams(url.hash.slice(1)));
+      }
     } catch {
       return null;
     }
+  } else if (trimmed.startsWith('/')) {
+    looksStructured = true;
+    const queryIdx = trimmed.indexOf('?');
+    if (queryIdx >= 0 && queryIdx < trimmed.length - 1) {
+      parsedParamSets.push(new URLSearchParams(trimmed.slice(queryIdx + 1)));
+    }
+  } else if (trimmed.startsWith('?')) {
+    looksStructured = true;
+    parsedParamSets.push(new URLSearchParams(trimmed.slice(1)));
+  } else if (
+    trimmed.includes('=')
+    && (trimmed.includes('&') || /^(code=|state=|error=)/.test(trimmed))
+  ) {
+    looksStructured = true;
+    parsedParamSets.push(new URLSearchParams(trimmed));
   }
 
-  const queryIdx = trimmed.indexOf('?');
-  if (queryIdx >= 0 && queryIdx < trimmed.length - 1) {
-    const params = new URLSearchParams(trimmed.slice(queryIdx + 1));
+  for (const params of parsedParamSets) {
     const parsed = oauthResultFromQueryParams(params);
     if (parsed) {
       return parsed;
     }
   }
 
-  if (trimmed.includes('=') || trimmed.includes('&')) {
-    const params = new URLSearchParams(trimmed.replace(/^\?/, ''));
-    const parsed = oauthResultFromQueryParams(params);
-    if (parsed) {
-      return parsed;
-    }
+  if (looksStructured) {
+    return null;
   }
 
-  if (/^[A-Za-z0-9._-]{8,}$/.test(trimmed)) {
-    return new OAuthResult({ code: trimmed });
+  if (/\s/.test(trimmed)) {
+    return null;
   }
 
-  return null;
+  return new OAuthResult({ code: trimmed });
 }
 
 function tryOpen(command, args, url) {

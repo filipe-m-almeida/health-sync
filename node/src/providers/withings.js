@@ -296,6 +296,14 @@ function watermarkEpoch(db, resource, overlapSeconds) {
   return Math.max(0, (epoch || 0) - Math.max(0, overlapSeconds));
 }
 
+function parseOverlapSeconds(rawValue) {
+  const parsed = Number.parseInt(String(rawValue ?? 300), 10);
+  if (!Number.isFinite(parsed)) {
+    return 300;
+  }
+  return Math.max(0, parsed);
+}
+
 function setWatermarkEpoch(db, resource, epoch) {
   const nowEpoch = Math.floor(Date.now() / 1000);
   const wm = Math.max(0, Number.parseInt(String(epoch ?? nowEpoch), 10) || nowEpoch);
@@ -324,7 +332,7 @@ function toSeriesArray(body) {
 async function syncMeasures(db, token, cfg) {
   await db.syncRun('withings', 'measures', async () => {
     await db.transaction(async () => {
-      const overlapSeconds = Number.parseInt(String(cfg.overlap_seconds ?? 300), 10) || 300;
+      const overlapSeconds = parseOverlapSeconds(cfg.overlap_seconds);
       const lastupdate = watermarkEpoch(db, 'measures', overlapSeconds);
       const meastypes = Array.isArray(cfg.meastypes) && cfg.meastypes.length ? cfg.meastypes : DEFAULT_MEASTYPES;
 
@@ -394,7 +402,7 @@ async function syncMeasures(db, token, cfg) {
 async function syncActivity(db, token, cfg) {
   await db.syncRun('withings', 'activity', async () => {
     await db.transaction(async () => {
-      const overlapSeconds = Number.parseInt(String(cfg.overlap_seconds ?? 300), 10) || 300;
+      const overlapSeconds = parseOverlapSeconds(cfg.overlap_seconds);
       const lastupdate = watermarkEpoch(db, 'activity', overlapSeconds);
 
       let offset = 0;
@@ -452,7 +460,7 @@ async function syncActivity(db, token, cfg) {
 async function syncWorkouts(db, token, cfg) {
   await db.syncRun('withings', 'workouts', async () => {
     await db.transaction(async () => {
-      const overlapSeconds = Number.parseInt(String(cfg.overlap_seconds ?? 300), 10) || 300;
+      const overlapSeconds = parseOverlapSeconds(cfg.overlap_seconds);
       const lastupdate = watermarkEpoch(db, 'workouts', overlapSeconds);
 
       let offset = 0;
@@ -515,7 +523,7 @@ async function syncWorkouts(db, token, cfg) {
 async function syncSleepSummary(db, token, cfg) {
   await db.syncRun('withings', 'sleep_summary', async () => {
     await db.transaction(async () => {
-      const overlapSeconds = Number.parseInt(String(cfg.overlap_seconds ?? 300), 10) || 300;
+      const overlapSeconds = parseOverlapSeconds(cfg.overlap_seconds);
       const lastupdate = watermarkEpoch(db, 'sleep_summary', overlapSeconds);
 
       let offset = 0;
