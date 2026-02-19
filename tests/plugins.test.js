@@ -81,3 +81,9 @@ test('built-in eightsleep provider supports auth', async () => {
   assert.ok(providers.has('eightsleep'));
   assert.equal(Boolean(providers.get('eightsleep').supportsAuth), true);
 });
+
+test('built-in whoop provider supports auth', async () => {
+  const { providers } = await loadProviders(baseConfig(), {});
+  assert.ok(providers.has('whoop'));
+  assert.equal(Boolean(providers.get('whoop').supportsAuth), true);
+});

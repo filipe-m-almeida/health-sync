@@ -3,6 +3,7 @@ import withingsProvider from './withings.js';
 import hevyProvider from './hevy.js';
 import stravaProvider from './strava.js';
 import eightsleepProvider from './eightsleep.js';
+import whoopProvider from './whoop.js';
 
 export function builtInProviders() {
   return [
@@ -11,5 +12,6 @@ export function builtInProviders() {
     hevyProvider,
     stravaProvider,
     eightsleepProvider,
+    whoopProvider,
   ];
 }

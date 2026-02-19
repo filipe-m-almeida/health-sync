@@ -41,7 +41,7 @@ Expected files in this directory:
 
 ## Direct Auth Rule (Mandatory)
 
-For OAuth2 providers (`oura`, `withings`, `strava`), be direct and guide the user through this exact pattern:
+For OAuth2 providers (`oura`, `withings`, `strava`, `whoop`), be direct and guide the user through this exact pattern:
 
 1. Create/select provider app in the provider portal.
 2. Get `client_id` and `client_secret`.
@@ -74,6 +74,7 @@ cd workspace/health-sync
 health-sync auth oura
 health-sync auth withings
 health-sync auth strava
+health-sync auth whoop
 health-sync auth eightsleep
 health-sync sync
 health-sync status
@@ -102,8 +103,9 @@ Provider order:
 1. `oura`
 2. `withings`
 3. `strava`
-4. `eightsleep`
-5. `hevy`
+4. `whoop`
+5. `eightsleep`
+6. `hevy`
 
 ## Provider Setup Links And Credential Instructions
 
@@ -197,6 +199,46 @@ Run:
 
 ```bash
 health-sync auth strava
+```
+
+Direct callback instruction:
+
+- If consent flow does not complete cleanly in browser, ask for the full callback URL and continue auth with it.
+
+### WHOOP (`health-sync auth whoop`)
+
+Where the user goes:
+
+- WHOOP Developer Dashboard: `https://developer-dashboard.whoop.com`
+- WHOOP Getting Started: `https://developer.whoop.com/docs/developing/getting-started`
+- WHOOP OAuth docs: `https://developer.whoop.com/docs/developing/oauth`
+
+How to get credentials:
+
+1. Create/select a WHOOP app in the Developer Dashboard.
+2. Configure redirect URI to `http://127.0.0.1:8487/callback`.
+3. Ensure app scopes include the WHOOP datasets needed for sync.
+4. Include `offline` scope so the CLI receives refresh tokens.
+5. Copy `client_id` and `client_secret`.
+6. Put them in `[whoop]` in `health-sync.toml`.
+
+Config requirements:
+
+- `[whoop].client_id`
+- `[whoop].client_secret`
+- `[whoop].redirect_uri` (default scaffold: `http://127.0.0.1:8487/callback`)
+- `[whoop].scopes` should include `offline`
+
+Default WHOOP endpoints in scaffold:
+
+- authorize: `https://api.prod.whoop.com/oauth/oauth2/auth`
+- token: `https://api.prod.whoop.com/oauth/oauth2/token`
+- API base: `https://api.prod.whoop.com/developer`
+
+Run:
+
+```bash
+health-sync auth whoop
 ```
 
 Direct callback instruction:

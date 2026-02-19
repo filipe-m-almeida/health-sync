@@ -71,6 +71,19 @@ export function baseConfig(overrides = {}) {
       overlap_seconds: 604800,
       page_size: 100,
     },
+    whoop: {
+      enabled: false,
+      client_id: null,
+      client_secret: null,
+      authorize_url: 'https://api.prod.whoop.com/oauth/oauth2/auth',
+      token_url: 'https://api.prod.whoop.com/oauth/oauth2/token',
+      api_base_url: 'https://api.prod.whoop.com/developer',
+      redirect_uri: 'http://127.0.0.1:8487/callback',
+      scopes: 'offline read:recovery read:cycles read:workout read:sleep read:profile read:body_measurement',
+      start_date: '2010-01-01',
+      overlap_days: 7,
+      page_size: 25,
+    },
     eightsleep: {
       enabled: false,
       access_token: null,
@@ -95,6 +108,7 @@ export function baseConfig(overrides = {}) {
     withings: { ...cfg.withings, ...(overrides.withings || {}) },
     hevy: { ...cfg.hevy, ...(overrides.hevy || {}) },
     strava: { ...cfg.strava, ...(overrides.strava || {}) },
+    whoop: { ...cfg.whoop, ...(overrides.whoop || {}) },
     eightsleep: { ...cfg.eightsleep, ...(overrides.eightsleep || {}) },
     plugins: { ...(cfg.plugins || {}), ...(overrides.plugins || {}) },
   };

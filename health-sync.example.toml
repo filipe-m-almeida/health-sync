@@ -82,6 +82,28 @@ enabled = false
 # overlap_seconds = 604800    # 7 days
 # page_size = 100             # 1-200
 
+[whoop]
+# Set to true to sync this provider.
+enabled = false
+
+# OAuth2
+# client_id = "..."
+# client_secret = "..."
+# redirect_uri = "http://127.0.0.1:8487/callback"
+#
+# WHOOP OAuth and API endpoints:
+# authorize_url = "https://api.prod.whoop.com/oauth/oauth2/auth"
+# token_url = "https://api.prod.whoop.com/oauth/oauth2/token"
+# api_base_url = "https://api.prod.whoop.com/developer"
+#
+# Include `offline` to receive refresh tokens.
+# scopes = "offline read:recovery read:cycles read:workout read:sleep read:profile read:body_measurement"
+#
+# Sync tuning:
+# start_date = "2010-01-01"  # YYYY-MM-DD
+# overlap_days = 7
+# page_size = 25             # 1-25
+
 [eightsleep]
 # Set to true to sync this provider.
 enabled = false

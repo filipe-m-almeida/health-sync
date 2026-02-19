@@ -1,6 +1,6 @@
 ---
 name: health-sync
-description: Analyze synced health data across pOura, Withings, Hevy, Strava and Eight Sleep.
+description: Analyze synced health data across Oura, Withings, Hevy, Strava, WHOOP, and Eight Sleep.
 read_when:
   - User asks for health-sync setup, auth, sync, or provider status
   - User asks about sleep, recovery, training, activity, your health, or cross-provider trends
@@ -16,6 +16,7 @@ This skill is dedicated to analyzing the user's health data across available pro
 - Withings
 - Hevy
 - Strava
+- WHOOP
 - Eight Sleep
 
 The main goal is to help the user understand trends, compare signals across providers, and find useful insights from their synced data.
@@ -46,6 +47,7 @@ To understand data schemas and query correctly, read the provider reference file
 - `references/withings.md`
 - `references/hevy.md`
 - `references/strava.md`
+- `references/whoop.md`
 - `references/eightsleep.md`
 
 ## Freshness Rule (Mandatory)

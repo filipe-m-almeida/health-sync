@@ -251,7 +251,7 @@ function resolveCredsPath(configPath) {
 }
 
 function enableHint(providerId) {
-  const builtin = new Set(['oura', 'withings', 'hevy', 'strava', 'eightsleep']);
+  const builtin = new Set(['oura', 'withings', 'hevy', 'strava', 'whoop', 'eightsleep']);
   if (builtin.has(providerId)) {
     return `[${providerId}].enabled = true`;
   }

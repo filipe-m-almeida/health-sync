@@ -114,6 +114,7 @@ test('init creates scaffolded config from example template', async (t) => {
   assert.match(content, /^\[withings\]$/m);
   assert.match(content, /^\[hevy\]$/m);
   assert.match(content, /^\[strava\]$/m);
+  assert.match(content, /^\[whoop\]$/m);
   assert.match(content, /^\[eightsleep\]$/m);
 });
 

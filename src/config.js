@@ -50,6 +50,19 @@ const BUILTIN_DEFAULTS = {
     overlap_seconds: 604800,
     page_size: 100,
   },
+  whoop: {
+    enabled: false,
+    client_id: null,
+    client_secret: null,
+    authorize_url: 'https://api.prod.whoop.com/oauth/oauth2/auth',
+    token_url: 'https://api.prod.whoop.com/oauth/oauth2/token',
+    api_base_url: 'https://api.prod.whoop.com/developer',
+    redirect_uri: 'http://127.0.0.1:8487/callback',
+    scopes: 'offline read:recovery read:cycles read:workout read:sleep read:profile read:body_measurement',
+    start_date: '2010-01-01',
+    overlap_days: 7,
+    page_size: 25,
+  },
   eightsleep: {
     enabled: false,
     access_token: null,
@@ -145,6 +158,7 @@ export function defaultConfig() {
     withings: clone(BUILTIN_DEFAULTS.withings),
     hevy: clone(BUILTIN_DEFAULTS.hevy),
     strava: clone(BUILTIN_DEFAULTS.strava),
+    whoop: clone(BUILTIN_DEFAULTS.whoop),
     eightsleep: clone(BUILTIN_DEFAULTS.eightsleep),
     plugins: {},
   };
@@ -223,6 +237,19 @@ export function loadConfig(configPath) {
   cfg.strava.start_date = getStr(strava, 'start_date', cfg.strava.start_date);
   cfg.strava.overlap_seconds = getInt(strava, 'overlap_seconds', cfg.strava.overlap_seconds);
   cfg.strava.page_size = getInt(strava, 'page_size', cfg.strava.page_size);
+
+  const whoop = section(raw, 'whoop');
+  cfg.whoop.enabled = getBool(whoop, 'enabled', cfg.whoop.enabled);
+  cfg.whoop.client_id = getStr(whoop, 'client_id', cfg.whoop.client_id);
+  cfg.whoop.client_secret = getStr(whoop, 'client_secret', cfg.whoop.client_secret);
+  cfg.whoop.authorize_url = getStr(whoop, 'authorize_url', cfg.whoop.authorize_url);
+  cfg.whoop.token_url = getStr(whoop, 'token_url', cfg.whoop.token_url);
+  cfg.whoop.api_base_url = getStr(whoop, 'api_base_url', cfg.whoop.api_base_url);
+  cfg.whoop.redirect_uri = getStr(whoop, 'redirect_uri', cfg.whoop.redirect_uri);
+  cfg.whoop.scopes = getStr(whoop, 'scopes', cfg.whoop.scopes);
+  cfg.whoop.start_date = getStr(whoop, 'start_date', cfg.whoop.start_date);
+  cfg.whoop.overlap_days = getInt(whoop, 'overlap_days', cfg.whoop.overlap_days);
+  cfg.whoop.page_size = getInt(whoop, 'page_size', cfg.whoop.page_size);
 
   const eightsleep = section(raw, 'eightsleep');
   cfg.eightsleep.enabled = getBool(eightsleep, 'enabled', cfg.eightsleep.enabled);
@@ -361,5 +388,6 @@ export const BUILTIN_PROVIDER_IDS = Object.freeze([
   'withings',
   'hevy',
   'strava',
+  'whoop',
   'eightsleep',
 ]);

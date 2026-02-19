@@ -16,6 +16,7 @@ It is designed as a personal data cache: first sync backfills history, then futu
 - Withings (Advanced Health Data API, OAuth2)
 - Hevy (public API, API key, Pro account required)
 - Strava (OAuth2 or static access token)
+- WHOOP (OAuth2)
 - Eight Sleep (unofficial API)
 
 ## Requirements
@@ -56,6 +57,7 @@ health-sync init
 health-sync auth oura
 health-sync auth withings
 health-sync auth strava
+health-sync auth whoop
 health-sync auth eightsleep
 ```
 
@@ -112,7 +114,7 @@ See `health-sync.example.toml` for all provider options.
 
 `auth` notes:
 
-- Oura, Withings, and Strava: OAuth flow (CLI prints auth URL and waits for callback URL/code).
+- Oura, Withings, Strava, and WHOOP: OAuth flow (CLI prints auth URL and waits for callback URL/code).
 - Eight Sleep: username/password grant (or static token).
 - Hevy: no `auth` command; configure `[hevy].api_key` directly.
 

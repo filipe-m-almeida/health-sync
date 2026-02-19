@@ -1,6 +1,6 @@
 {
   "name": "health-sync",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "type": "module",
   "description": "Node.js port of health-sync",
   "files": [
