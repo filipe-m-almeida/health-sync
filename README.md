@@ -20,26 +20,23 @@ It is designed as a personal data cache: first sync backfills history, then futu
 
 ## Requirements
 
-- Python 3.11+
-- SQLite (included with Python)
+- Node.js 20+
+- SQLite (bundled through `better-sqlite3`)
 - Provider credentials (API key and/or OAuth client settings depending on provider)
 
 ## Installation
 
-Using `uv` (recommended):
+Install globally from npm:
 
 ```bash
-uv venv
-. .venv/bin/activate
-uv pip install -e .
+npm install -g health-sync
 ```
 
-Alternative with `pip`:
+Or run from this repository:
 
 ```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -e .
+npm install
+npm link
 ```
 
 ## Quick Start
@@ -152,10 +149,11 @@ You can add external providers as in-process plugins.
 
 ## Development
 
-Run tests:
+Run checks and tests:
 
 ```bash
-uv run pytest
+npm run check
+npm test
 ```
 
 ## License

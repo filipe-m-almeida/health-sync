@@ -1,11 +1,16 @@
 {
-  "name": "health-sync-node",
+  "name": "health-sync",
   "version": "0.2.0",
-  "private": true,
   "type": "module",
   "description": "Node.js port of health-sync",
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "health-sync.example.toml"
+  ],
   "bin": {
-    "health-sync": "./bin/health-sync.js"
+    "health-sync": "bin/health-sync.js"
   },
   "scripts": {
     "start": "node ./bin/health-sync.js",
