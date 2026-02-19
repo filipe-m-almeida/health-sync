@@ -53,6 +53,13 @@ test('parseArgs has providers and init subcommands', () => {
   assert.equal(parseArgs(['init']).command, 'init');
 });
 
+test('parseArgs rejects flag-like auth provider id', () => {
+  assert.throws(
+    () => parseArgs(['auth', '-h']),
+    /auth requires PROVIDER argument|Invalid provider id/,
+  );
+});
+
 test('init creates scaffolded config from example template', async (t) => {
   const dir = makeTempDir();
   t.after(() => removeDir(dir));

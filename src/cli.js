@@ -84,6 +84,12 @@ function parseAuthArgs(args) {
       throw new Error(`Unknown auth option: ${arg}`);
     }
     if (!out.provider) {
+      if (arg === '-h' || arg === '--help') {
+        throw new Error('auth requires PROVIDER argument (e.g. health-sync auth oura)');
+      }
+      if (arg.startsWith('-')) {
+        throw new Error(`Invalid provider id: ${arg}`);
+      }
       out.provider = arg;
       continue;
     }

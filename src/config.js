@@ -323,23 +323,34 @@ function scaffoldBuiltinDefaults(providerId) {
   };
 }
 
+const PROVIDER_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
+function assertValidProviderId(providerId) {
+  const normalized = String(providerId || '').trim();
+  if (!normalized || !PROVIDER_ID_RE.test(normalized)) {
+    throw new Error(`Invalid provider id: ${providerId}`);
+  }
+  return normalized;
+}
+
 export function scaffoldProviderConfig(configPath, providerId) {
+  const normalizedProviderId = assertValidProviderId(providerId);
   const resolved = path.resolve(configPath);
   const raw = fs.existsSync(resolved) ? TOML.parse(fs.readFileSync(resolved, 'utf8')) : {};
 
-  const builtinDefaults = scaffoldBuiltinDefaults(providerId);
+  const builtinDefaults = scaffoldBuiltinDefaults(normalizedProviderId);
   if (builtinDefaults) {
-    const sectionRaw = section(raw, providerId);
+    const sectionRaw = section(raw, normalizedProviderId);
     const merged = { ...builtinDefaults, ...sectionRaw, enabled: true };
-    upsertSectionValues(raw, [providerId], merged);
+    upsertSectionValues(raw, [normalizedProviderId], merged);
   } else {
     const pluginsRaw = section(raw, 'plugins');
-    const pluginRaw = section(pluginsRaw, providerId);
+    const pluginRaw = section(pluginsRaw, normalizedProviderId);
     const merged = { ...pluginRaw, enabled: true };
     if (!pluginRaw.module) {
       merged.module = pluginRaw.module ?? null;
     }
-    upsertSectionValues(raw, ['plugins', providerId], merged);
+    upsertSectionValues(raw, ['plugins', normalizedProviderId], merged);
   }
 
   writeToml(resolved, raw);
