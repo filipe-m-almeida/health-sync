@@ -1,6 +1,6 @@
 ---
 name: health-sync
-description: Set up and operate health-sync in a dedicated health workspace (preflight checks, config/bootstrap, provider auth, sync/status checks) and analyze the SQLite cache for Oura, Withings, Hevy, Strava, and Eight Sleep.
+description: Set up and operate health-sync in workspace/health-sync (install, init, provider auth, sync/status) and analyze the SQLite cache for Oura, Withings, Hevy, Strava, and Eight Sleep.
 ---
 
 # Health Sync Setup + Analysis
@@ -9,54 +9,58 @@ description: Set up and operate health-sync in a dedicated health workspace (pre
 
 - If the user asks to set up or initialize `health-sync`, follow **Setup Workflow**.
 - If the user asks data questions on an existing DB, follow **Analysis Workflow**.
-- Setup sequence is: preflight, `init` once, provider auth/setup one-by-one, then `sync` only on demand.
-- Never print secrets or query raw token values from `oauth_tokens`.
-- Accept natural user input (plain text, copied URL, screenshot transcription). Ask for strict formats only when technically required.
+- Keep all setup actions inside `workspace/health-sync`.
+- Prefer `health-sync` CLI flows; avoid direct provider API calls unless debugging.
+- Never print secrets or query raw token values.
 
 ## Setup Workflow
 
-### 0) Run mandatory preflight before auth/setup
+### 0) Install + preflight
 
-Do this before asking the user for any provider credentials:
-
-1. Verify CLI/runtime:
+1. Ensure CLI is available:
+   - `npm install -g health-sync`
    - `health-sync --help`
-2. Resolve workspace and expected paths from `pwd`:
-   - `<workspace>/health/health-sync.toml`
-   - `<workspace>/health/health.sqlite`
-3. If CLI or paths are missing:
-   - run install/bootstrap flow first
-   - do not continue into auth steps until preflight passes
+2. Ensure directory exists and operate there:
+   - `workspace/health-sync`
 
 Use exact command snippets from `references/setup.md`.
 
-### 1) Install/bootstrap only if preflight fails
+### 1) Initialize once
 
-- Install from npm:
-  - `npm install -g health-sync`
-- Re-run preflight checks.
-- If `health-sync --help` still fails, stop and fix Node/npm environment first.
+1. Run `health-sync init` in `workspace/health-sync`.
+2. Confirm `health-sync.toml` exists.
+3. Confirm `health.sqlite` exists.
 
-### 2) Initialize config + DB
+### 2) Mandatory auth guidance model
 
-1. Create `<workspace>/health/` if missing.
-2. Run `init` via `HS_CMD` wrapper from `references/setup.md` with explicit `--config` and `--db`.
-3. Confirm both files exist:
-   - `<workspace>/health/health-sync.toml`
-   - `<workspace>/health/health.sqlite`
+When guiding setup, be direct:
 
-### 3) Apply onboarding UX standard (required)
+1. OAuth2 providers (`oura`, `withings`, `strava`):
+   - guide user to create app credentials (`client_id`, `client_secret`)
+   - ensure callback URL is configured exactly in provider portal and `health-sync.toml`
+   - run `health-sync auth <provider>`
+   - if user sees an error page after consent, still ask for full callback URL
+   - use that callback URL/code to complete the auth flow
+2. Non-OAuth2 providers:
+   - Hevy: API key only (`[hevy].api_key`), no `auth` command
+   - Eight Sleep: account credentials or access token, then `health-sync auth eightsleep`
 
-For guided provider setup:
+### 3) Choose setup flow (important)
 
-1. One action per message.
-2. Fully populated copy/paste command/URL once user provides values (no unresolved placeholders).
-3. State the exact expected artifact/output for each step.
-4. On errors, ask only for the minimum artifact needed (for OAuth: full callback URL or full terminal error text).
+After `init`, there are two supported flows:
 
-### 4) Provider sequencing pattern
+1. Recommended flow (default):
+   - guide user to fill `health-sync.toml`
+   - user runs `health-sync auth` for each provider themselves
+   - this is safer and reduces token leakage risk
+2. Non-recommended assisted flow:
+   - only if user explicitly asks
+   - guide provider-by-provider and run `health-sync auth` one at a time
+   - avoid direct `curl` flows unless debugging
 
-Ask exactly one yes/no question per provider, in this order:
+### 4) Provider sequencing pattern for assisted flow
+
+Proceed one provider at a time in this order:
 
 1. `oura`
 2. `withings`
@@ -64,92 +68,33 @@ Ask exactly one yes/no question per provider, in this order:
 4. `eightsleep`
 5. `hevy`
 
-If no: keep/set `enabled = false` and continue.
-If yes: complete that provider setup before moving to the next.
+Per provider:
 
-### 5) OAuth providers (`oura`, `withings`, `strava`)
+1. collect required config values
+2. update `health-sync.toml`
+3. run `health-sync auth <provider>` where supported
+4. confirm success before moving on
 
-For each enabled OAuth provider:
+### 5) Post-setup checks
 
-1. Guide user through app setup URL(s) from `references/setup.md`.
-2. Collect and confirm credentials as exact text:
-   - `client_id`
-   - `client_secret`
-3. Set exact redirect URI in provider app and config.
-4. Run interactive auth command:
-   - run `auth <provider>` via `HS_CMD` wrapper from `references/setup.md`
-5. Collect final callback URL (or `code`) and send to command stdin.
-6. Confirm token persistence success.
-7. Validate with one real provider API check from `references/setup.md`.
-
-Important OAuth callout:
-
-- Authorize URL uses `client_id` + exact `redirect_uri` only.
-- Token exchange uses `client_id` + `client_secret` + `code`.
-
-If token exchange fails after an endpoint mismatch or `invalid_grant`:
-
-- request a fresh authorization code immediately
-- perform one immediate retry at the correct token endpoint
-
-### 6) Oura-specific rules (critical)
-
-- Oura is OAuth2-only in this workflow (no personal token setup path).
-- Use Oura app console:
-  - `https://developer.ouraring.com/applications`
-- Default redirect URI for this setup:
-  - `http://localhost:8080/callback`
-- Use issuer-era OAuth endpoints/scopes from `references/setup.md`.
-- Before user clicks authorize:
-  - tell them that an authorize page error can still produce a valid callback URL
-  - if that happens, they should still copy and send the full callback URL
-
-### 7) Eight Sleep-specific rules
-
-- Validate credentials first with:
-  - `POST https://client-api.8slp.net/v1/login`
-- If two password retries fail with the same credential error:
-  - switch to a single recovery step:
-    - user logs into Eight Sleep app/web
-    - set/reset password once
-    - paste the new password
-    - retry auth flow
-
-### 8) Hevy-specific rules
-
-- Start with source-of-truth link:
-  - `https://hevy.com/settings?developer`
-- Confirm Hevy Pro requirement before deeper setup.
-- Validate key with:
-  - `GET /v1/user/info`
-  - `GET /v1/workouts/count`
-- After routine creation, return:
-  - direct web link: `https://hevy.com/routine/<id>`
-  - fallback app navigation paths from `references/setup.md`
-
-### 9) Post-setup validation
-
-After provider onboarding:
-
-1. `providers` via `HS_CMD` wrapper from `references/setup.md`
-2. `status` via `HS_CMD` wrapper from `references/setup.md`
-3. Run `sync` only when user asks.
+1. `health-sync providers --verbose`
+2. `health-sync sync` (only when user asks)
+3. `health-sync status`
 
 ## Analysis Workflow
 
 When setup is complete and user asks data questions:
 
 1. Read provider schema reference first.
-2. Query `records` / `sync_state` / `sync_runs` as needed.
+2. Query `records`, `sync_state`, and `sync_runs` as needed.
 3. Keep SQL provider-aware (resource semantics vary).
 4. For Hevy trend/report analysis, apply configured quality cutoff from `references/hevy.md` when present.
-5. Avoid printing secrets from `oauth_tokens`.
 
 ## References
 
 Load only the file needed for the active task:
 
-- Setup + auth + validation checklist: `references/setup.md`
+- Setup/auth behavior: `references/setup.md`
 - Oura schema: `references/oura.md`
 - Withings schema: `references/withings.md`
 - Hevy schema + quality cutoff/query patterns: `references/hevy.md`

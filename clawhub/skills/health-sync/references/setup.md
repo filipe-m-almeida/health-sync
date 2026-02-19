@@ -1,79 +1,103 @@
 # Health Sync Setup Reference
 
-Use this file when the user asks to set up `health-sync` in ClawHub.
+Use this file to guide setup behavior in ClawHub.
 
-## 0) Mandatory preflight (run first)
+## Scope And Defaults
 
-Run preflight before asking for provider credentials.
+- Operate inside `workspace/health-sync`.
+- Prefer `health-sync` CLI commands over direct provider API calls.
+- You are expected to guide the user through setup.
+- Default to user-run setup (recommended) to reduce risk of leaking secrets/tokens.
+- Assisted setup is allowed only if the user explicitly asks for it.
+- Do not use direct provider `curl` calls unless you are debugging a failed CLI auth flow.
 
-```bash
-WORKSPACE_ROOT="$(pwd)"
-HEALTH_DIR="$WORKSPACE_ROOT/health"
-CONFIG="$HEALTH_DIR/health-sync.toml"
-DB="$HEALTH_DIR/health.sqlite"
+## Standard Bootstrap (Always First)
 
-if ! command -v health-sync >/dev/null 2>&1; then
-  echo "health-sync CLI not found on PATH."
-  echo "Install it with: npm install -g health-sync"
-  exit 1
-fi
-
-HS_CMD=("health-sync")
-
-echo "workspace: $WORKSPACE_ROOT"
-echo "health dir: $HEALTH_DIR"
-echo "config: $CONFIG"
-echo "db: $DB"
-
-"${HS_CMD[@]}" --help
-```
-
-Required checks:
-
-1. CLI is runnable (`health-sync --help` exits 0).
-2. Workspace path is resolved from current `pwd`.
-3. Expected setup paths are known (`$HEALTH_DIR`, `$CONFIG`, `$DB`).
-
-If preflight fails, run install/bootstrap first and re-check.
-
-## 1) Install/bootstrap fallback
-
-Install from npm:
+1. Ensure the CLI is installed:
 
 ```bash
 npm install -g health-sync
-"${HS_CMD[@]}" --help
+health-sync --help
 ```
 
-If CLI still fails, stop and fix Node/npm environment before provider auth.
-
-## 2) Initialize config + DB
+2. Work inside the project directory:
 
 ```bash
-mkdir -p "$HEALTH_DIR"
-"${HS_CMD[@]}" --config "$CONFIG" --db "$DB" init
+mkdir -p workspace/health-sync
+cd workspace/health-sync
 ```
 
-Confirm files exist:
+3. Initialize config + local storage:
 
 ```bash
-test -f "$CONFIG" && echo "ok config"
-test -f "$DB" && echo "ok db"
+health-sync init
 ```
 
-## 3) Onboarding UX standard (required)
+Expected files in this directory:
 
-When guiding a user:
+- `health-sync.toml`
+- `health.sqlite`
+- `.health-sync.creds` (created when auth tokens are saved)
 
-1. One action per message.
-2. Once user provides concrete values, return fully populated copy/paste URLs/commands.
-3. Say what artifact is expected next (for example, "paste full callback URL").
-4. If error occurs, ask only for the minimal diagnostic artifact.
-5. Accept natural/plain input; do not force rigid input templates unless technically required.
+## Direct Auth Rule (Mandatory)
 
-## 4) Provider prompt sequence
+For OAuth2 providers (`oura`, `withings`, `strava`), be direct and guide the user through this exact pattern:
 
-Ask one provider at a time, in this order:
+1. Create/select provider app in the provider portal.
+2. Get `client_id` and `client_secret`.
+3. Set the exact callback URL in provider portal and `health-sync.toml`.
+4. Run `health-sync auth <provider>` from `workspace/health-sync`.
+5. Tell user they may see an error page after consent.
+6. If an error page appears, they should still copy the full callback URL and send it.
+7. Use that callback URL/code with the running `health-sync auth` flow.
+
+For non-OAuth2 providers:
+
+- Hevy: API key only (`[hevy].api_key`), no `auth` command.
+- Eight Sleep: not OAuth2; uses account credentials (`email`/`password`) or `access_token`, then `health-sync auth eightsleep`.
+
+## Two Flows After `health-sync init`
+
+### 1) Recommended Flow (Default)
+
+Use this unless the user explicitly asks for hands-on setup help.
+
+1. Guide the user to edit `workspace/health-sync/health-sync.toml`.
+2. Explain which fields they need for each enabled provider.
+3. Tell them to run `health-sync auth` commands themselves from `workspace/health-sync`.
+4. Then run sync/status.
+
+User-run commands:
+
+```bash
+cd workspace/health-sync
+health-sync auth oura
+health-sync auth withings
+health-sync auth strava
+health-sync auth eightsleep
+health-sync sync
+health-sync status
+```
+
+Notes:
+
+- Hevy does not use `health-sync auth`; it uses `[hevy].api_key` in `health-sync.toml`.
+- `health-sync auth <provider>` scaffolds/enables that provider section in config.
+
+### 2) Non-Recommended Assisted Flow
+
+Use only if the user explicitly asks the agent to guide setup step-by-step.
+
+1. Warn briefly that assisted setup may expose sensitive credentials/tokens.
+2. Proceed one provider at a time.
+3. For each provider:
+   - guide where to get credentials
+   - update `health-sync.toml`
+   - run `health-sync auth <provider>` when supported
+   - confirm success before moving to next provider
+4. Avoid direct provider API calls unless debugging a CLI auth error.
+
+Provider order:
 
 1. `oura`
 2. `withings`
@@ -81,315 +105,164 @@ Ask one provider at a time, in this order:
 4. `eightsleep`
 5. `hevy`
 
-Ask exactly one yes/no per provider:
+## Provider Setup Links And Credential Instructions
 
-- "Initialize `<provider>` now?"
+### Oura (`health-sync auth oura`)
 
-If `no`, keep/set `enabled = false`.
-If `yes`, complete that provider before moving to the next.
+Where the user goes:
 
-## 5) OAuth providers (`oura`, `withings`, `strava`)
+- Oura app console: `https://developer.ouraring.com/applications`
 
-Use this explicit flow:
+How to get credentials:
 
-1. Create/select provider app.
-2. Set redirect URI(s) exactly.
-3. Generate authorize URL.
-4. Capture callback URL / auth code.
-5. Exchange code for token.
-6. Store credentials in config/DB.
-7. Validate with one real provider API call.
+1. Sign in to Oura developer portal.
+2. Create/select an application.
+3. Set callback/redirect URI to `http://localhost:8080/callback`.
+4. Copy the app `client_id` and `client_secret`.
+5. Put them in `[oura]` in `health-sync.toml`.
 
-Parameter separation callout:
+Config requirements:
 
-- `/authorize` uses `client_id` + exact `redirect_uri` (not `client_secret`).
-- `/token` uses `client_id` + `client_secret` + `code`.
+- `[oura].client_id`
+- `[oura].client_secret`
+- `[oura].redirect_uri` (default scaffold: `http://localhost:8080/callback`)
 
-If token exchange fails after endpoint mismatch or failed attempts, request a fresh code and exchange once at the corrected token endpoint.
+Default OAuth endpoints in scaffold:
 
-## 6) Oura setup (critical path)
-
-### Source-of-truth and required values
-
-- Oura auth model for this workflow: OAuth2 only.
-- App console URL: `https://developer.ouraring.com/applications`
-- Required values to collect as exact text:
-  - `client_id`
-  - `client_secret`
-- If values were first shared via screenshot, ask user to copy/paste exact text before building commands.
-
-### Redirect, endpoints, scopes
-
-- Default redirect URI for this setup:
-  - `http://localhost:8080/callback`
-- Working authorize endpoint:
-  - `https://moi.ouraring.com/oauth/v2/ext/oauth-authorize`
-- Working token endpoint:
-  - `https://moi.ouraring.com/oauth/v2/ext/oauth-token`
-- Working scope set:
-  - `extapi:daily extapi:heartrate extapi:personal extapi:workout extapi:session extapi:tag extapi:spo2`
-
-### Preferred flow via health-sync CLI
-
-Set these in `[oura]` first:
-
-```toml
-enabled = true
-client_id = "..."
-client_secret = "..."
-redirect_uri = "http://localhost:8080/callback"
-authorize_url = "https://moi.ouraring.com/oauth/v2/ext/oauth-authorize"
-token_url = "https://moi.ouraring.com/oauth/v2/ext/oauth-token"
-scopes = "extapi:daily extapi:heartrate extapi:personal extapi:workout extapi:session extapi:tag extapi:spo2"
-```
+- authorize: `https://moi.ouraring.com/oauth/v2/ext/oauth-authorize`
+- token: `https://moi.ouraring.com/oauth/v2/ext/oauth-token`
 
 Run:
 
 ```bash
-"${HS_CMD[@]}" --config "$CONFIG" --db "$DB" auth oura
+health-sync auth oura
 ```
 
-Before user clicks authorize, tell them:
+Direct callback instruction:
 
-- "If Oura shows an error page, copy the full callback URL anyway and send it."
+- If Oura shows an error page after consent, ask the user to still copy the full callback URL and paste it.
 
-### Manual troubleshooting flow (if CLI auth fails)
+### Withings (`health-sync auth withings`)
 
-Build a fully populated authorize URL (replace shell variables before sending to user):
+Where the user goes:
 
-```bash
-export OURA_CLIENT_ID="replace-with-real-client-id"
-export OURA_REDIRECT_URI="http://localhost:8080/callback"
-export OURA_SCOPES="extapi:daily extapi:heartrate extapi:personal extapi:workout extapi:session extapi:tag extapi:spo2"
-export OURA_STATE="$("${PY_BIN:-python3}" - <<'PY'
-import secrets
-print(secrets.token_urlsafe(16))
-PY
-)"
+- Integration guide: `https://developer.withings.com/developer-guide/v3/integration-guide/public-health-data-api/developer-account/create-your-accesses-no-medical-cloud/`
+- Developer dashboard: `https://developer.withings.com/dashboard/`
 
-"${PY_BIN:-python3}" - <<'PY'
-import os
-import urllib.parse
+How to get credentials:
 
-base = "https://moi.ouraring.com/oauth/v2/ext/oauth-authorize"
-params = {
-    "response_type": "code",
-    "client_id": os.environ["OURA_CLIENT_ID"],
-    "redirect_uri": os.environ["OURA_REDIRECT_URI"],
-    "scope": os.environ["OURA_SCOPES"],
-    "state": os.environ["OURA_STATE"],
-}
-print(base + "?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote))
-PY
-```
+1. Sign in/create a Withings developer account.
+2. Create/select an app for the public health data API.
+3. Set callback/redirect URI to `http://127.0.0.1:8485/callback`.
+4. Copy `client_id` and `client_secret`.
+5. Put them in `[withings]` in `health-sync.toml`.
 
-If callback includes `iss=...`, discover endpoints from OIDC:
+Config requirements:
 
-```bash
-ISS="paste-iss-from-callback"
-curl -sS "${ISS%/}/.well-known/openid-configuration"
-```
-
-Exchange code once at the correct token endpoint:
-
-```bash
-OURA_TOKEN_ENDPOINT="https://moi.ouraring.com/oauth/v2/ext/oauth-token"
-OURA_CLIENT_SECRET="replace-with-real-client-secret"
-OURA_CODE="paste-code"
-
-curl -sS -X POST "$OURA_TOKEN_ENDPOINT" \
-  -u "$OURA_CLIENT_ID:$OURA_CLIENT_SECRET" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "grant_type=authorization_code" \
-  --data-urlencode "code=$OURA_CODE" \
-  --data-urlencode "redirect_uri=$OURA_REDIRECT_URI"
-```
-
-Validate token with one real API call:
-
-```bash
-OURA_ACCESS_TOKEN="paste-access-token"
-curl -sS -H "Authorization: Bearer $OURA_ACCESS_TOKEN" \
-  "https://api.ouraring.com/v2/usercollection/personal_info"
-```
-
-## 7) Withings setup
-
-Official pages:
-
-1. Integration guide:
-   - `https://developer.withings.com/developer-guide/v3/integration-guide/public-health-data-api/developer-account/create-your-accesses-no-medical-cloud/`
-2. Developer dashboard:
-   - `https://developer.withings.com/dashboard/`
-
-Redirect default:
-
-- `http://127.0.0.1:8485/callback`
+- `[withings].client_id`
+- `[withings].client_secret`
+- `[withings].redirect_uri` (default scaffold: `http://127.0.0.1:8485/callback`)
 
 Run:
 
 ```bash
-"${HS_CMD[@]}" --config "$CONFIG" --db "$DB" auth withings
+health-sync auth withings
 ```
 
-## 8) Strava setup
+Direct callback instruction:
 
-Official pages:
+- If browser flow does not return cleanly, request the full callback URL and feed it back into the running auth flow.
 
-1. App settings:
-   - `https://www.strava.com/settings/api`
-2. Auth docs:
-   - `https://developers.strava.com/docs/authentication`
+### Strava (`health-sync auth strava`)
 
-Redirect default:
+Where the user goes:
 
-- `http://127.0.0.1:8486/callback`
+- Strava API app settings: `https://www.strava.com/settings/api`
+- Strava auth docs: `https://developers.strava.com/docs/authentication`
+
+How to get credentials:
+
+1. Create/select a Strava API app.
+2. Configure callback settings so your redirect URI matches `http://127.0.0.1:8486/callback`.
+3. Copy app `client_id` and `client_secret`.
+4. Put them in `[strava]` in `health-sync.toml`.
+
+Config options:
+
+- Option A (recommended): `[strava].client_id`, `[strava].client_secret`, `[strava].redirect_uri`
+- Option B: `[strava].access_token` (static token mode)
+- Default scaffold redirect: `http://127.0.0.1:8486/callback`
 
 Run:
 
 ```bash
-"${HS_CMD[@]}" --config "$CONFIG" --db "$DB" auth strava
+health-sync auth strava
 ```
 
-## 9) Eight Sleep setup
+Direct callback instruction:
 
-### Credential validation endpoint
+- If consent flow does not complete cleanly in browser, ask for the full callback URL and continue auth with it.
 
-Use this first for lightweight credential sanity check:
+### Eight Sleep (`health-sync auth eightsleep`)
 
-- `POST https://client-api.8slp.net/v1/login`
+Where the user goes:
 
-Example:
+- Eight Sleep app/web account (no public OAuth app dashboard required for this flow)
 
-```bash
-export EIGHT_EMAIL="you@example.com"
-export EIGHT_PASSWORD="replace-with-password"
-EIGHT_LOGIN_JSON="$("${PY_BIN:-python3}" - <<'PY'
-import json
-import os
+How to get credentials:
 
-print(json.dumps({"email": os.environ["EIGHT_EMAIL"], "password": os.environ["EIGHT_PASSWORD"]}))
-PY
-)"
+1. Use account credentials from Eight Sleep app/web login.
+2. Put `email` and `password` in `[eightsleep]`.
+3. Keep scaffolded `client_id`/`client_secret` defaults unless there is a known upstream change.
 
-curl -sS -X POST "https://client-api.8slp.net/v1/login" \
-  -H "Content-Type: application/json" \
-  -d "$EIGHT_LOGIN_JSON"
-```
+Config options:
 
-Tell user the response class clearly (success vs auth error) without echoing secrets.
-
-If two retries fail with the same password error:
-
-1. Ask user to log into Eight Sleep app/web.
-2. Set/reset password once.
-3. Retry with the new password only once.
-
-### health-sync auth
-
-Set required fields:
-
-```toml
-[eightsleep]
-enabled = true
-client_id = "0894c7f33bb94800a03f1f4df13a4f38"
-client_secret = "f0954a3ed5763ba3d06834c73731a32f15f168f47d4f164751275def86db0c76"
-email = "..."
-password = "..."
-```
+- Option A (recommended): `[eightsleep].email`, `[eightsleep].password`
+- Option B: `[eightsleep].access_token`
+- `client_id` and `client_secret` defaults are scaffolded by `health-sync init`
 
 Run:
 
 ```bash
-"${HS_CMD[@]}" --config "$CONFIG" --db "$DB" auth eightsleep
+health-sync auth eightsleep
 ```
 
-## 10) Hevy setup
+### Hevy (No `auth` command)
 
-### Source of truth + key retrieval
+Where the user goes:
 
 - Hevy API docs: `https://api.hevyapp.com/docs/`
-- API key page: `https://hevy.com/settings?developer`
-- Hevy Pro is required.
+- Hevy developer/API key page: `https://hevy.com/settings?developer`
 
-Set config:
+How to get credentials:
 
-```toml
-[hevy]
-enabled = true
-api_key = "..."
-```
+1. Open Hevy developer page.
+2. Generate/copy API key (Hevy Pro required).
+3. Put key in `[hevy].api_key` and set `enabled = true`.
 
-### Key validation calls
+Config requirements:
 
-```bash
-HEVY_API_KEY="replace-with-real-key"
-curl -sS "https://api.hevyapp.com/v1/user/info" -H "api-key: $HEVY_API_KEY"
-curl -sS "https://api.hevyapp.com/v1/workouts/count" -H "api-key: $HEVY_API_KEY"
-```
+- `[hevy].api_key`
 
-### Historical data-quality cutoff
-
-When user reports a known correction point, set a provider cutoff for analysis scripts.
-
-Example baseline:
-
-- `HEVY_DATA_VALID_FROM_DATE=2026-02-12`
-
-Use this cutoff by default in trend/report SQL:
-
-```sql
-where provider = 'hevy'
-  and resource = 'workouts'
-  and start_time >= '2026-02-12'
-```
-
-### Routine create/update gotchas
-
-After creating a routine, always return:
-
-1. direct web link: `https://hevy.com/routine/<id>`
-2. fallback app paths (UI can vary by app version): Plans tab, Routines tab
-
-For `PUT /v1/routines/{id}` payloads:
-
-- strip response-only fields (`index`, ids/timestamps not accepted by PUT schema)
-- ensure top-level routine notes are non-empty
-
-Sanitize payload example:
+Run sync after config:
 
 ```bash
-jq '
-  del(
-    .id,
-    .created_at,
-    .updated_at,
-    .index,
-    .exercises[]?.index,
-    .exercises[]?.sets[]?.index
-  )
-  | .notes = ((.notes // "") | if length == 0 then "Routine updated via API" else . end)
-' routine-response.json > routine-put.json
+health-sync sync
 ```
 
-## 11) Post-setup validation
+## Post-Setup Checks
 
-Run:
+Run from `workspace/health-sync`:
 
 ```bash
-"${HS_CMD[@]}" --config "$CONFIG" --db "$DB" providers
-"${HS_CMD[@]}" --config "$CONFIG" --db "$DB" status
+health-sync providers --verbose
+health-sync sync
+health-sync status
 ```
 
-Optional first sync (only on request):
+## Safety Notes
 
-```bash
-"${HS_CMD[@]}" --config "$CONFIG" --db "$DB" sync --providers <provider ...>
-```
-
-Success criteria:
-
-- Config and DB live under `<workspace>/health`.
-- Enabled providers appear in `providers`.
-- Provider auth succeeds without manual DB edits.
-- `status` runs without path/config errors.
+- Keep all setup work in `workspace/health-sync`.
+- Never commit `health-sync.toml` if it contains secrets.
+- Never commit `.health-sync.creds`.
+- Prefer guiding the user to run auth locally themselves.
