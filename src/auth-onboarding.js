@@ -252,6 +252,20 @@ function providerLabel(providerId) {
   return `${colors.accent(label)} ${colors.muted(`(${providerId})`)}`;
 }
 
+function providerStatusTags(provider) {
+  const tags = [];
+  if (provider?.enabled) {
+    tags.push(baseChalk.level > 0 ? colors.success('[enabled]') : '[enabled]');
+  }
+  if (provider?.setupComplete) {
+    tags.push(baseChalk.level > 0 ? colors.success('[setup]') : '[setup]');
+  }
+  if (!tags.length) {
+    return '';
+  }
+  return ` ${tags.join(' ')}`;
+}
+
 function isBuiltInProvider(providerId) {
   return Object.hasOwn(PROVIDER_NAMES, providerId);
 }
@@ -1053,6 +1067,7 @@ export async function promptAuthProviderChecklist(providerRows) {
     let warningLine = '';
 
     const heading = new Text('', 0, 0);
+    const providerById = new Map(providerRows.map((provider) => [provider.id, provider]));
     const listItems = providerRows.map((provider) => {
       const selectable = selectableIds.has(provider.id);
       return {
@@ -1070,6 +1085,7 @@ export async function promptAuthProviderChecklist(providerRows) {
         '- Select one or more providers for guided setup.',
         '- Space toggles selection for the highlighted provider.',
         '- Enter continues to the next screen.',
+        '- Tags: [enabled] means active in config, [setup] means credentials/token already saved.',
       ];
       if (warningLine) {
         lines.push('', warningLine);
@@ -1083,7 +1099,7 @@ export async function promptAuthProviderChecklist(providerRows) {
         const checked = selectable
           ? (selected.has(item.value) ? '[x]' : '[ ]')
           : '[-]';
-        item.label = `${checked} ${providerLabel(item.value)}`;
+        item.label = `${checked} ${providerLabel(item.value)}${providerStatusTags(providerById.get(item.value))}`;
       }
       list.invalidate();
       tui.requestRender();

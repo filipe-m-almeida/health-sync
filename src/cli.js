@@ -277,6 +277,54 @@ function configSectionForProvider(configData, providerId) {
   return {};
 }
 
+function hasText(value) {
+  return value !== null && value !== undefined && String(value).trim() !== '';
+}
+
+function hasSavedAccessToken(providerId, section, db) {
+  const token = db.getOAuthToken(providerId);
+  if (token?.accessToken) {
+    return true;
+  }
+  if (providerId === 'strava' || providerId === 'eightsleep') {
+    return hasText(section?.access_token);
+  }
+  return false;
+}
+
+function providerLikelySetup(providerId, section, db, supportsAuth) {
+  if (providerId === 'hevy') {
+    return hasText(section?.api_key);
+  }
+
+  if (providerId === 'oura' || providerId === 'withings' || providerId === 'whoop') {
+    const hasOauthConfig = hasText(section?.client_id)
+      && hasText(section?.client_secret)
+      && hasText(section?.redirect_uri);
+    return hasOauthConfig && hasSavedAccessToken(providerId, section, db);
+  }
+
+  if (providerId === 'strava') {
+    if (hasText(section?.access_token)) {
+      return true;
+    }
+    const hasOauthConfig = hasText(section?.client_id)
+      && hasText(section?.client_secret)
+      && hasText(section?.redirect_uri);
+    return hasOauthConfig && hasSavedAccessToken(providerId, section, db);
+  }
+
+  if (providerId === 'eightsleep') {
+    return hasSavedAccessToken(providerId, section, db);
+  }
+
+  if (!supportsAuth) {
+    return false;
+  }
+
+  return hasSavedAccessToken(providerId, section, db);
+}
+
 function requireProvider(context, providerId) {
   const plugin = context.providers.get(providerId);
   if (!plugin) {
@@ -444,39 +492,50 @@ async function cmdInit(parsed) {
     return 0;
   }
 
-  const context = await loadContext(configPath);
-  const providerRows = Array.from(context.providers.keys())
-    .sort()
-    .map((providerId) => {
-      const plugin = context.providers.get(providerId);
-      const builtInGuide = shouldShowBuiltInGuide(providerId);
-      return {
-        id: providerId,
-        supportsAuth: Boolean(plugin?.supportsAuth),
-        supportsInteractiveSetup: Boolean(plugin?.supportsAuth || builtInGuide),
-        description: plugin?.description || null,
-      };
-    });
-
-  if (!providerRows.length) {
-    console.log('No providers discovered; skipping interactive setup.');
-    return 0;
-  }
-  if (!providerRows.some((provider) => provider.supportsInteractiveSetup)) {
-    console.log('No setup-capable providers discovered; skipping interactive setup.');
-    return 0;
-  }
-
-  const selected = await promptAuthProviderChecklist(providerRows);
-  if (!selected.length) {
-    console.log('Skipped provider setup during init.');
-    return 0;
-  }
-
   const authDb = openDb(dbPath, { credsPath: resolveCredsPath(configPath) });
   const failures = [];
 
   try {
+    const context = await loadContext(configPath);
+    const providerRows = Array.from(context.providers.keys())
+      .sort()
+      .map((providerId) => {
+        const plugin = context.providers.get(providerId);
+        const builtInGuide = shouldShowBuiltInGuide(providerId);
+        const section = configSectionForProvider(context.loadedConfig.data, providerId);
+        const enabled = providerEnabled(context.loadedConfig.data, providerId);
+        const setupComplete = providerLikelySetup(
+          providerId,
+          section,
+          authDb,
+          Boolean(plugin?.supportsAuth),
+        );
+
+        return {
+          id: providerId,
+          supportsAuth: Boolean(plugin?.supportsAuth),
+          supportsInteractiveSetup: Boolean(plugin?.supportsAuth || builtInGuide),
+          description: plugin?.description || null,
+          enabled,
+          setupComplete,
+        };
+      });
+
+    if (!providerRows.length) {
+      console.log('No providers discovered; skipping interactive setup.');
+      return 0;
+    }
+    if (!providerRows.some((provider) => provider.supportsInteractiveSetup)) {
+      console.log('No setup-capable providers discovered; skipping interactive setup.');
+      return 0;
+    }
+
+    const selected = await promptAuthProviderChecklist(providerRows);
+    if (!selected.length) {
+      console.log('Skipped provider setup during init.');
+      return 0;
+    }
+
     for (const providerId of selected) {
       const plugin = context.providers.get(providerId);
       const label = authProviderDisplayName(providerId);
