@@ -97,7 +97,7 @@ api_key = "YOUR_HEVY_API_KEY"
 enabled = true
 client_id = "YOUR_CLIENT_ID"
 client_secret = "YOUR_CLIENT_SECRET"
-redirect_uri = "http://127.0.0.1:8486/callback"
+redirect_uri = "http://localhost:8486/callback"
 ```
 
 See `health-sync.example.toml` for all provider options.

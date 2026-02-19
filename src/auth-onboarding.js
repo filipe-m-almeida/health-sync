@@ -49,6 +49,7 @@ const PROVIDER_NAMES = {
 };
 
 const ABORT_SENTINEL = Symbol('health-sync-abort');
+const URL_PATTERN = /https?:\/\/[^\s)]+/g;
 
 export class UserAbortError extends Error {
   constructor(message = 'Setup aborted by user.') {
@@ -70,6 +71,31 @@ function graphemes(value) {
 
 function secretMask(value) {
   return '*'.repeat(graphemes(value).length);
+}
+
+function styleTextWithUrls(text, colorFn = null) {
+  if (baseChalk.level <= 0) {
+    return String(text);
+  }
+
+  const value = String(text);
+  let out = '';
+  let cursor = 0;
+  for (const match of value.matchAll(URL_PATTERN)) {
+    const index = match.index ?? 0;
+    if (index > cursor) {
+      const segment = value.slice(cursor, index);
+      out += colorFn ? colorFn(segment) : segment;
+    }
+    out += colors.control(match[0]);
+    cursor = index + match[0].length;
+  }
+
+  if (cursor < value.length) {
+    const tail = value.slice(cursor);
+    out += colorFn ? colorFn(tail) : tail;
+  }
+  return out;
 }
 
 class MaskedInput {
@@ -269,7 +295,7 @@ function parseRedirectUri(redirectUri) {
     };
   } catch {
     return {
-      host: '127.0.0.1',
+      host: 'localhost',
       uri: String(redirectUri || ''),
     };
   }
@@ -493,7 +519,7 @@ function setupGuide(providerId, cfg) {
       lines: [
         '1. Open https://developer.withings.com/dashboard/',
         '2. Create an app for the Public Health Data API (or open an existing one).',
-        `3. Set callback/redirect URI to: ${redirect.uri || 'http://127.0.0.1:8485/callback'}`,
+        `3. Set callback/redirect URI to: ${redirect.uri || 'http://localhost:8485/callback'}`,
         '4. Save settings and copy Client ID + Client Secret.',
         `5. Keep scopes aligned with config: ${cfg?.scopes || 'user.metrics,user.activity'}`,
         '6. Paste values below, then we run OAuth in this terminal.',
@@ -506,7 +532,7 @@ function setupGuide(providerId, cfg) {
       fieldHelp: {
         client_id: 'Withings dashboard -> your app -> Client ID.',
         client_secret: 'Withings dashboard -> your app -> Client Secret.',
-        redirect_uri: `Use the same callback URL in both Withings and health-sync: ${redirect.uri || 'http://127.0.0.1:8485/callback'}`,
+        redirect_uri: `Use the same callback URL in both Withings and health-sync: ${redirect.uri || 'http://localhost:8485/callback'}`,
       },
       requiresAuth: true,
     };
@@ -548,8 +574,8 @@ function setupGuide(providerId, cfg) {
       lines: [
         '1. Open https://www.strava.com/settings/api',
         '2. Create a Strava API application (or open your existing app).',
-        `3. Set Authorization Callback Domain to: ${redirect.host || '127.0.0.1'}`,
-        `4. We will use this redirect URI in health-sync: ${redirect.uri || 'http://127.0.0.1:8486/callback'}`,
+        `3. Set Authorization Callback Domain to: ${redirect.host || 'localhost'}`,
+        `4. We will use this redirect URI in health-sync: ${redirect.uri || 'http://localhost:8486/callback'}`,
         '5. Copy the Client ID and Client Secret.',
         '6. Next screen lets you choose OAuth app mode (recommended) or static token mode.',
       ],
@@ -559,7 +585,7 @@ function setupGuide(providerId, cfg) {
       fieldHelp: {
         client_id: 'Strava API settings page -> Client ID.',
         client_secret: 'Strava API settings page -> Client Secret.',
-        redirect_uri: `Must match your Strava app callback settings. Recommended: ${redirect.uri || 'http://127.0.0.1:8486/callback'}`,
+        redirect_uri: `Must match your Strava app callback settings. Recommended: ${redirect.uri || 'http://localhost:8486/callback'}`,
         access_token: 'Use this only for static token mode. OAuth mode is simpler for long-term refresh.',
       },
       requiresAuth: true,
@@ -572,7 +598,7 @@ function setupGuide(providerId, cfg) {
       lines: [
         '1. Open https://developer-dashboard.whoop.com/',
         '2. Create/select your WHOOP developer application.',
-        `3. Add this redirect URI exactly: ${redirect.uri || 'http://127.0.0.1:8487/callback'}`,
+        `3. Add this redirect URI exactly: ${redirect.uri || 'http://localhost:8487/callback'}`,
         '4. Copy Client ID + Client Secret from the app settings page.',
         '5. Make sure scopes include `offline` so refresh tokens are issued.',
         '6. Paste values below and continue.',
@@ -586,7 +612,7 @@ function setupGuide(providerId, cfg) {
       fieldHelp: {
         client_id: 'WHOOP dashboard -> your app -> Client ID.',
         client_secret: 'WHOOP dashboard -> your app -> Client Secret.',
-        redirect_uri: `Must match WHOOP app redirect URI. Recommended: ${redirect.uri || 'http://127.0.0.1:8487/callback'}`,
+        redirect_uri: `Must match WHOOP app redirect URI. Recommended: ${redirect.uri || 'http://localhost:8487/callback'}`,
         scopes: 'Keep default scopes and ensure `offline` is present for token refresh.',
       },
       requiresAuth: true,
@@ -609,7 +635,7 @@ function setupGuide(providerId, cfg) {
       ],
       fieldHelp: {
         email: 'Use the same login username/email you use in the Eight Sleep app.',
-        password: 'Use your Eight Sleep account password. It will be shown as *** while you type.',
+        password: 'Use your Eight Sleep account password. It will be shown as masked stars while you type.',
       },
       fieldPrompts: {
         email: [
@@ -702,16 +728,16 @@ function createScreenText(title, lines = []) {
       return value;
     }
     if (value.startsWith('- ')) {
-      return `${colors.accent('-')} ${colors.text(value.slice(2))}`;
+      return `${colors.accent('-')} ${styleTextWithUrls(value.slice(2), colors.text)}`;
     }
     if (/^\d+\.\s/.test(value)) {
       const [prefix, ...rest] = value.split(' ');
-      return `${colors.accent(prefix)} ${colors.text(rest.join(' '))}`;
+      return `${colors.accent(prefix)} ${styleTextWithUrls(rest.join(' '), colors.text)}`;
     }
     if (/^Step\s+\d+\s+of\s+\d+/.test(value)) {
-      return colors.accentSoft(value);
+      return styleTextWithUrls(value, colors.accentSoft);
     }
-    return colors.text(value);
+    return styleTextWithUrls(value, colors.text);
   });
 
   const controls = baseChalk.level > 0
@@ -928,7 +954,7 @@ async function promptStravaConfig(cfg, guide = null) {
   });
 
   if (!mode) {
-    return { ok: false, updates: {} };
+    return { ok: false, updates: {}, back: true };
   }
 
   if (mode === 'token') {
@@ -940,7 +966,7 @@ async function promptStravaConfig(cfg, guide = null) {
     }, { guide, step: 1, total: 1 });
 
     if (!tokenField.ok) {
-      return { ok: false, updates: {} };
+      return { ok: false, updates: {}, back: true };
     }
 
     return {
@@ -969,7 +995,7 @@ async function promptStravaConfig(cfg, guide = null) {
       total: fields.length,
     });
     if (!value.ok) {
-      return { ok: false, updates: {} };
+      return { ok: false, updates: {}, back: true };
     }
     updates[field.key] = value.value;
   }
@@ -1172,39 +1198,47 @@ export async function runProviderPreAuthWizard(providerId, cfg, db, options = {}
   }
 
   const guide = setupGuide(providerId, cfg);
-
-  if (showGuide && interactiveTerminalAvailable()) {
-    const proceed = await promptYesNo(
-      guide.title,
-      guide.lines,
-      'Continue setup',
-      'Skip this provider',
-    );
-
-    if (!proceed) {
-      return {
-        proceed: false,
-        updates: {},
-        status,
-      };
-    }
-  }
+  const canShowGuide = showGuide && interactiveTerminalAvailable();
 
   let updates = {};
+  let showGuideScreen = canShowGuide;
+  while (true) {
+    if (showGuideScreen) {
+      const proceed = await promptYesNo(
+        guide.title,
+        guide.lines,
+        'Continue setup',
+        'Skip this provider',
+      );
 
-  if (showConfigPrompts) {
-    const promptResult = await promptProviderConfigValues(providerId, cfg, guide);
-    if (!promptResult.ok) {
-      return {
-        proceed: false,
-        updates: {},
-        status,
-      };
+      if (!proceed) {
+        return {
+          proceed: false,
+          updates: {},
+          status,
+        };
+      }
     }
-    updates = promptResult.updates;
+
+    if (showConfigPrompts) {
+      const promptResult = await promptProviderConfigValues(providerId, cfg, guide);
+      if (!promptResult.ok) {
+        if (promptResult.back && canShowGuide) {
+          showGuideScreen = true;
+          continue;
+        }
+        return {
+          proceed: false,
+          updates: {},
+          status,
+        };
+      }
+      updates = promptResult.updates;
+    }
+    break;
   }
 
-  if (showGuide && interactiveTerminalAvailable()) {
+  if (canShowGuide) {
     const requiresAuth = guide.requiresAuth !== false;
     const startAuth = await promptYesNo(
       requiresAuth ? `${providerName(providerId)}: ready to connect` : `${providerName(providerId)}: finish setup`,

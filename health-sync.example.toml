@@ -39,7 +39,7 @@ enabled = false
 # OAuth2
 # client_id = "..."
 # client_secret = "..."
-# redirect_uri = "http://127.0.0.1:8485/callback"
+# redirect_uri = "http://localhost:8485/callback"
 # scopes = "user.metrics,user.activity"
 #
 # Sync tuning:
@@ -73,7 +73,7 @@ enabled = false
 # Option B: OAuth2 (recommended)
 # client_id = "..."
 # client_secret = "..."
-# redirect_uri = "http://127.0.0.1:8486/callback"
+# redirect_uri = "http://localhost:8486/callback"
 # scopes = "read,activity:read_all"
 # approval_prompt = "auto"
 #
@@ -89,7 +89,7 @@ enabled = false
 # OAuth2
 # client_id = "..."
 # client_secret = "..."
-# redirect_uri = "http://127.0.0.1:8487/callback"
+# redirect_uri = "http://localhost:8487/callback"
 #
 # WHOOP OAuth and API endpoints:
 # authorize_url = "https://api.prod.whoop.com/oauth/oauth2/auth"
