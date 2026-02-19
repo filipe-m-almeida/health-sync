@@ -42,32 +42,32 @@ npm link
 
 ## Quick Start
 
-1. Initialize config and DB:
+1. Initialize config and DB, then follow the interactive provider onboarding wizard:
 
 ```bash
 health-sync init
 ```
 
-2. Edit `health-sync.toml`:
-- Set `[app].db` if you do not want `./health.sqlite`
+The wizard lets you:
+- see all discovered providers in a checklist
+- pick which providers to set up now
+- get provider-specific setup URLs and callback values
+- enter credentials directly into `health-sync.toml`
+- run auth flows and save tokens in `.health-sync.creds`
 
-3. Run provider auth one provider at a time:
+2. (Optional) re-run auth for a single provider later:
 
 ```bash
 health-sync auth oura
-health-sync auth withings
-health-sync auth strava
-health-sync auth whoop
-health-sync auth eightsleep
 ```
 
-4. Sync data:
+3. Sync data:
 
 ```bash
 health-sync sync
 ```
 
-5. Inspect sync state and counts:
+4. Inspect sync state and counts:
 
 ```bash
 health-sync status
@@ -104,7 +104,7 @@ See `health-sync.example.toml` for all provider options.
 
 ## CLI Commands
 
-- `health-sync init`: create a scaffolded config (from `health-sync.example.toml`) and create DB tables
+- `health-sync init`: create a scaffolded config (from `health-sync.example.toml`), create DB tables, and launch interactive provider setup when running in a TTY
 - `health-sync init-db`: create DB tables only (legacy)
 - `health-sync auth <provider>`: run auth flow for one provider/plugin
 - `health-sync sync`: run sync for all enabled providers

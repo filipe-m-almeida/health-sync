@@ -5,11 +5,19 @@ import {
   initConfigFile,
   loadConfig,
   scaffoldProviderConfig,
+  updateProviderConfigValues,
 } from './config.js';
 import { openDb } from './db.js';
 import { PluginHelpers, providerEnabled } from './plugins/base.js';
 import { loadProviders } from './plugins/loader.js';
 import { setRequestJsonVerbose } from './util.js';
+import {
+  authProviderDisplayName,
+  hasInteractiveAuthUi,
+  promptAuthProviderChecklist,
+  runProviderPreAuthWizard,
+  shouldShowBuiltInGuide,
+} from './auth-onboarding.js';
 
 const DEFAULT_CONFIG_PATH = 'health-sync.toml';
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -258,15 +266,92 @@ function enableHint(providerId) {
   return `[plugins.${providerId}].enabled = true`;
 }
 
+function configSectionForProvider(configData, providerId) {
+  if (configData?.[providerId] && typeof configData[providerId] === 'object') {
+    return configData[providerId];
+  }
+  if (configData?.plugins?.[providerId] && typeof configData.plugins[providerId] === 'object') {
+    return configData.plugins[providerId];
+  }
+  return {};
+}
+
+function requireAuthPlugin(context, providerId) {
+  const plugin = context.providers.get(providerId);
+  if (!plugin) {
+    const known = context.providers.size
+      ? Array.from(context.providers.keys()).sort().join(', ')
+      : '(none)';
+    throw new Error(
+      `Unknown provider \`${providerId}\`. `
+      + `Available providers: ${known}. `
+      + 'Use `health-sync providers` to inspect discovery/config status.',
+    );
+  }
+  if (!plugin.supportsAuth) {
+    throw new Error(`Provider \`${providerId}\` does not support auth.`);
+  }
+  return plugin;
+}
+
+async function runAuthForProvider({
+  context,
+  providerId,
+  configPath,
+  dbPath,
+  db,
+  listenHost,
+  listenPort,
+  showGuide,
+  showConfigPrompts,
+  askRedoIfWorking,
+}) {
+  const plugin = requireAuthPlugin(context, providerId);
+
+  scaffoldProviderConfig(configPath, providerId);
+  let loadedConfig = loadConfig(configPath);
+
+  const wizard = await runProviderPreAuthWizard(
+    providerId,
+    configSectionForProvider(loadedConfig.data, providerId),
+    db,
+    {
+      showGuide,
+      showConfigPrompts,
+      askRedoIfWorking,
+    },
+  );
+
+  if (!wizard.proceed) {
+    return { skipped: true };
+  }
+
+  const updates = {
+    enabled: true,
+    ...(wizard.updates || {}),
+  };
+  updateProviderConfigValues(configPath, providerId, updates);
+  loadedConfig = loadConfig(configPath);
+
+  await plugin.auth(db, loadedConfig.data, new PluginHelpers(loadedConfig.data), {
+    listenHost,
+    listenPort,
+    configPath,
+    dbPath,
+  });
+
+  return { skipped: false };
+}
+
 function usage() {
   return [
     'Usage: health-sync [--config path] [--db path] <command> [options]',
     '       health-sync --version',
     '',
     'Commands:',
-    '  init                          Initialize config file and database',
+    '  init                          Initialize config/database and launch interactive setup (TTY)',
     '  init-db                       Initialize database only',
-    '  auth <provider>               Run provider authentication flow',
+    '  auth <provider>               Run provider authentication flow for one provider',
     '    --listen-host <host>        OAuth callback listen host (default 127.0.0.1)',
     '    --listen-port <port>        OAuth callback listen port (default 0 -> config redirect port)',
     '  sync [--providers a,b,c] [-v|--verbose]  Sync enabled providers',
@@ -302,6 +387,78 @@ async function cmdInit(parsed) {
 
   console.log(`Initialized config: ${configPath}`);
   console.log(`Initialized database: ${path.resolve(dbPath)}`);
+
+  if (!hasInteractiveAuthUi()) {
+    console.log('Interactive setup requires a TTY; run `health-sync auth <provider>` to authenticate later.');
+    return 0;
+  }
+
+  const context = await loadContext(configPath);
+  const providerRows = Array.from(context.providers.keys())
+    .sort()
+    .map((providerId) => {
+      const plugin = context.providers.get(providerId);
+      return {
+        id: providerId,
+        supportsAuth: Boolean(plugin?.supportsAuth),
+        description: plugin?.description || null,
+      };
+    });
+
+  if (!providerRows.length) {
+    console.log('No providers discovered; skipping interactive auth setup.');
+    return 0;
+  }
+  if (!providerRows.some((provider) => provider.supportsAuth)) {
+    console.log('No auth-capable providers discovered; skipping interactive auth setup.');
+    return 0;
+  }
+
+  const selected = await promptAuthProviderChecklist(providerRows);
+  if (!selected.length) {
+    console.log('Skipped provider auth setup during init.');
+    return 0;
+  }
+
+  const authDb = openDb(dbPath, { credsPath: resolveCredsPath(configPath) });
+  const failures = [];
+
+  try {
+    for (const providerId of selected) {
+      const label = authProviderDisplayName(providerId);
+      console.log(`Starting guided setup for ${label} (${providerId})...`);
+      try {
+        const result = await runAuthForProvider({
+          context,
+          providerId,
+          configPath,
+          dbPath,
+          db: authDb,
+          listenHost: '127.0.0.1',
+          listenPort: 0,
+          showGuide: shouldShowBuiltInGuide(providerId),
+          showConfigPrompts: shouldShowBuiltInGuide(providerId),
+          askRedoIfWorking: true,
+        });
+        if (result.skipped) {
+          console.log(`Skipped auth for provider ${providerId}.`);
+          continue;
+        }
+        console.log(`Auth finished for provider ${providerId}.`);
+      } catch (err) {
+        failures.push({ providerId, err });
+        console.warn(`WARNING: setup failed for ${providerId}: ${err?.message || String(err)}`);
+      }
+    }
+  } finally {
+    authDb.close();
+  }
+
+  if (failures.length) {
+    console.warn(`Init completed with warnings; ${failures.length} provider setup flow(s) failed.`);
+    return 1;
+  }
+
   return 0;
 }
 
@@ -325,33 +482,27 @@ async function cmdAuth(parsed) {
   const loaded = loadConfig(configPath);
   const dbPath = resolveDbPath(parsed.dbPath, loaded);
 
-  scaffoldProviderConfig(configPath, parsed.options.provider);
-
   const context = await loadContext(configPath);
   const db = openDb(dbPath, { credsPath: resolveCredsPath(configPath) });
 
   try {
-    const plugin = context.providers.get(parsed.options.provider);
-    if (!plugin) {
-      const known = context.providers.size
-        ? Array.from(context.providers.keys()).sort().join(', ')
-        : '(none)';
-      throw new Error(
-        `Unknown provider \`${parsed.options.provider}\`. `
-        + `Available providers: ${known}. `
-        + 'Use `health-sync providers` to inspect discovery/config status.',
-      );
-    }
-    if (!plugin.supportsAuth) {
-      throw new Error(`Provider \`${parsed.options.provider}\` does not support auth.`);
-    }
-
-    await plugin.auth(db, context.loadedConfig.data, context.helpers, {
-      listenHost: parsed.options.listenHost,
-      listenPort: parsed.options.listenPort,
+    const result = await runAuthForProvider({
+      context,
+      providerId: parsed.options.provider,
       configPath,
       dbPath,
+      db,
+      listenHost: parsed.options.listenHost,
+      listenPort: parsed.options.listenPort,
+      showGuide: false,
+      showConfigPrompts: false,
+      askRedoIfWorking: hasInteractiveAuthUi(),
     });
+
+    if (result.skipped) {
+      console.log(`Skipped auth for provider ${parsed.options.provider}.`);
+      return 0;
+    }
 
     console.log(`Auth finished for provider ${parsed.options.provider}.`);
     return 0;

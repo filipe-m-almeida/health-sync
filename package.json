@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@iarna/toml": "^2.2.5",
+    "@mariozechner/pi-tui": "^0.53.0",
     "better-sqlite3": "^11.9.1"
   },
   "engines": {

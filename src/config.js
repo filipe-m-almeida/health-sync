@@ -383,6 +383,27 @@ export function scaffoldProviderConfig(configPath, providerId) {
   writeToml(resolved, raw);
 }
 
+export function updateProviderConfigValues(configPath, providerId, values) {
+  const normalizedProviderId = assertValidProviderId(providerId);
+  const resolved = path.resolve(configPath);
+  const raw = fs.existsSync(resolved) ? TOML.parse(fs.readFileSync(resolved, 'utf8')) : {};
+  const updates = (values && typeof values === 'object' && !Array.isArray(values)) ? values : {};
+
+  const builtinDefaults = scaffoldBuiltinDefaults(normalizedProviderId);
+  if (builtinDefaults) {
+    const sectionRaw = section(raw, normalizedProviderId);
+    const merged = { ...sectionRaw, ...updates };
+    upsertSectionValues(raw, [normalizedProviderId], merged);
+  } else {
+    const pluginsRaw = section(raw, 'plugins');
+    const pluginRaw = section(pluginsRaw, normalizedProviderId);
+    const merged = { ...pluginRaw, ...updates };
+    upsertSectionValues(raw, ['plugins', normalizedProviderId], merged);
+  }
+
+  writeToml(resolved, raw);
+}
+
 export const BUILTIN_PROVIDER_IDS = Object.freeze([
   'oura',
   'withings',
