@@ -1,4 +1,5 @@
 import {
+  CURSOR_MARKER,
   Container,
   Input,
   Key,
@@ -8,6 +9,7 @@ import {
   Spacer,
   TUI,
   Text,
+  visibleWidth,
 } from '@mariozechner/pi-tui';
 import chalk, { Chalk } from 'chalk';
 import { requestJson } from './util.js';
@@ -44,6 +46,133 @@ const PROVIDER_NAMES = {
   whoop: 'WHOOP',
   eightsleep: 'Eight Sleep',
 };
+
+const SECRET_PLACEHOLDER = '***';
+
+function graphemes(value) {
+  return Array.from(String(value || ''));
+}
+
+class MaskedInput {
+  constructor() {
+    this.value = '';
+    this.cursor = 0;
+    this.focused = false;
+    this.onSubmit = null;
+    this.onEscape = null;
+  }
+
+  getValue() {
+    return this.value;
+  }
+
+  setValue(value) {
+    this.value = String(value || '');
+    this.cursor = Math.min(this.cursor, graphemes(this.value).length);
+  }
+
+  handleInput(data) {
+    if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl('c'))) {
+      if (typeof this.onEscape === 'function') {
+        this.onEscape();
+      }
+      return;
+    }
+
+    if (matchesKey(data, Key.enter) || data === '\n') {
+      if (typeof this.onSubmit === 'function') {
+        this.onSubmit(this.value);
+      }
+      return;
+    }
+
+    const chars = graphemes(this.value);
+
+    if (matchesKey(data, Key.left)) {
+      this.cursor = Math.max(0, this.cursor - 1);
+      return;
+    }
+    if (matchesKey(data, Key.right)) {
+      this.cursor = Math.min(chars.length, this.cursor + 1);
+      return;
+    }
+    if (matchesKey(data, Key.home) || matchesKey(data, Key.ctrl('a'))) {
+      this.cursor = 0;
+      return;
+    }
+    if (matchesKey(data, Key.end) || matchesKey(data, Key.ctrl('e'))) {
+      this.cursor = chars.length;
+      return;
+    }
+    if (matchesKey(data, Key.backspace)) {
+      if (this.cursor > 0) {
+        chars.splice(this.cursor - 1, 1);
+        this.cursor -= 1;
+        this.value = chars.join('');
+      }
+      return;
+    }
+    if (matchesKey(data, Key.delete)) {
+      if (this.cursor < chars.length) {
+        chars.splice(this.cursor, 1);
+        this.value = chars.join('');
+      }
+      return;
+    }
+
+    const hasControlChars = [...data].some((ch) => {
+      const code = ch.charCodeAt(0);
+      return code < 32 || code === 0x7f || (code >= 0x80 && code <= 0x9f);
+    });
+    if (hasControlChars || data.startsWith('\u001b')) {
+      return;
+    }
+
+    const inserted = graphemes(data);
+    if (!inserted.length) {
+      return;
+    }
+    chars.splice(this.cursor, 0, ...inserted);
+    this.cursor += inserted.length;
+    this.value = chars.join('');
+  }
+
+  invalidate() {
+    // no-op
+  }
+
+  render(width) {
+    const prompt = '> ';
+    const availableWidth = width - prompt.length;
+    if (availableWidth <= 0) {
+      return [prompt];
+    }
+
+    const masked = '*'.repeat(graphemes(this.value).length);
+    let visible = masked;
+    let cursorDisplay = this.cursor;
+
+    if (visible.length > Math.max(1, availableWidth - 1)) {
+      const window = Math.max(1, availableWidth - 1);
+      let start = Math.max(0, this.cursor - Math.floor(window / 2));
+      if (start + window > visible.length) {
+        start = Math.max(0, visible.length - window);
+      }
+      visible = visible.slice(start, start + window);
+      cursorDisplay = this.cursor - start;
+    }
+
+    const beforeCursor = visible.slice(0, cursorDisplay);
+    const atCursor = visible[cursorDisplay] || ' ';
+    const afterCursor = visible.slice(cursorDisplay + (visible[cursorDisplay] ? 1 : 0));
+    const marker = this.focused ? CURSOR_MARKER : '';
+    const cursorChar = `\x1b[7m${atCursor}\x1b[27m`;
+    const textWithCursor = beforeCursor + marker + cursorChar + afterCursor;
+    const padding = ' '.repeat(Math.max(0, availableWidth - visibleWidth(textWithCursor)));
+
+    return [prompt + textWithCursor + padding];
+  }
+}
 
 function hasText(value) {
   return value !== null && value !== undefined && String(value).trim() !== '';
@@ -243,19 +372,24 @@ function setupGuide(providerId, cfg) {
     return {
       title: 'Oura onboarding',
       lines: [
-        '- Console: https://cloud.ouraring.com/oauth/applications',
-        '- OAuth docs: https://cloud.ouraring.com/docs/authentication',
-        '- Create/select an application in the Oura developer console.',
-        `- Set redirect URI to: ${redirect.uri || 'http://localhost:8080/callback'}`,
-        '- Copy Client ID and Client Secret from the app settings.',
-        `- Keep scopes aligned with health-sync config: ${cfg?.scopes || 'extapi:daily extapi:heartrate extapi:personal extapi:workout extapi:session extapi:tag extapi:spo2'}`,
-        '- Continue and health-sync will run OAuth2 Authorization Code flow.',
+        '1. Open https://cloud.ouraring.com/oauth/applications in your browser.',
+        '2. Click "Create New Application" (or open your existing app).',
+        '3. Set any app name you like, for example "Health Sync Personal".',
+        `4. Add this exact redirect URI: ${redirect.uri || 'http://localhost:8080/callback'}`,
+        '5. Save, then copy the Client ID and Client Secret.',
+        '6. Paste those values on the next screens.',
+        `7. Keep scopes as configured: ${cfg?.scopes || 'extapi:daily extapi:heartrate extapi:personal extapi:workout extapi:session extapi:tag extapi:spo2'}`,
       ],
       fields: [
         { key: 'client_id', label: 'Client ID', required: true },
         { key: 'client_secret', label: 'Client Secret', required: true, secret: true },
         { key: 'redirect_uri', label: 'Redirect URI', required: true },
       ],
+      fieldHelp: {
+        client_id: 'From Oura app settings -> OAuth credentials -> Client ID.',
+        client_secret: 'From Oura app settings -> OAuth credentials -> Client Secret.',
+        redirect_uri: `Must match the Oura app redirect exactly. Recommended: ${redirect.uri || 'http://localhost:8080/callback'}`,
+      },
     };
   }
 
@@ -263,19 +397,23 @@ function setupGuide(providerId, cfg) {
     return {
       title: 'Withings onboarding',
       lines: [
-        '- Integration guide: https://developer.withings.com/developer-guide/v3/integration-guide/public-health-data-api/developer-account/create-your-accesses-no-medical-cloud/',
-        '- Dashboard: https://developer.withings.com/dashboard/',
-        '- Create/select an application for the Public Health Data API.',
-        `- Set callback/redirect URI to: ${redirect.uri || 'http://127.0.0.1:8485/callback'}`,
-        '- Copy Client ID and Client Secret from the app settings.',
-        `- Keep scopes aligned with health-sync config: ${cfg?.scopes || 'user.metrics,user.activity'}`,
-        '- Continue and health-sync will run OAuth2 Authorization Code flow.',
+        '1. Open https://developer.withings.com/dashboard/',
+        '2. Create an app for the Public Health Data API (or open an existing one).',
+        `3. Set callback/redirect URI to: ${redirect.uri || 'http://127.0.0.1:8485/callback'}`,
+        '4. Save settings and copy Client ID + Client Secret.',
+        `5. Keep scopes aligned with config: ${cfg?.scopes || 'user.metrics,user.activity'}`,
+        '6. Paste values below, then we run OAuth in this terminal.',
       ],
       fields: [
         { key: 'client_id', label: 'Client ID', required: true },
         { key: 'client_secret', label: 'Client Secret', required: true, secret: true },
         { key: 'redirect_uri', label: 'Redirect URI', required: true },
       ],
+      fieldHelp: {
+        client_id: 'Withings dashboard -> your app -> Client ID.',
+        client_secret: 'Withings dashboard -> your app -> Client Secret.',
+        redirect_uri: `Use the same callback URL in both Withings and health-sync: ${redirect.uri || 'http://127.0.0.1:8485/callback'}`,
+      },
     };
   }
 
@@ -283,17 +421,22 @@ function setupGuide(providerId, cfg) {
     return {
       title: 'Strava onboarding',
       lines: [
-        '- App settings: https://www.strava.com/settings/api',
-        '- OAuth docs: https://developers.strava.com/docs/authentication',
-        '- Create/select a Strava API app.',
-        `- Set Authorization Callback Domain to: ${redirect.host || '127.0.0.1'}`,
-        `- Use redirect URI in health-sync: ${redirect.uri || 'http://127.0.0.1:8486/callback'}`,
-        '- Copy Client ID and Client Secret from the app settings.',
-        '- Continue and health-sync will run OAuth2 Authorization Code flow, or use static token mode.',
+        '1. Open https://www.strava.com/settings/api',
+        '2. Create a Strava API application (or open your existing app).',
+        `3. Set Authorization Callback Domain to: ${redirect.host || '127.0.0.1'}`,
+        `4. We will use this redirect URI in health-sync: ${redirect.uri || 'http://127.0.0.1:8486/callback'}`,
+        '5. Copy the Client ID and Client Secret.',
+        '6. Next screen lets you choose OAuth app mode (recommended) or static token mode.',
       ],
       fields: [
         { key: 'auth_mode', label: 'Auth mode', required: true, kind: 'choice' },
       ],
+      fieldHelp: {
+        client_id: 'Strava API settings page -> Client ID.',
+        client_secret: 'Strava API settings page -> Client Secret.',
+        redirect_uri: `Must match your Strava app callback settings. Recommended: ${redirect.uri || 'http://127.0.0.1:8486/callback'}`,
+        access_token: 'Use this only for static token mode. OAuth mode is simpler for long-term refresh.',
+      },
     };
   }
 
@@ -301,14 +444,12 @@ function setupGuide(providerId, cfg) {
     return {
       title: 'WHOOP onboarding',
       lines: [
-        '- Developer dashboard: https://developer-dashboard.whoop.com/',
-        '- Getting started docs: https://developer.whoop.com/docs/developing/getting-started',
-        '- OAuth docs: https://developer.whoop.com/docs/developing/oauth',
-        '- Create/select a WHOOP app in the dashboard.',
-        `- Set redirect URI to: ${redirect.uri || 'http://127.0.0.1:8487/callback'}`,
-        '- Copy Client ID and Client Secret from app settings.',
-        '- Ensure scopes include `offline` so refresh tokens are returned.',
-        '- Continue and health-sync will run OAuth2 Authorization Code flow.',
+        '1. Open https://developer-dashboard.whoop.com/',
+        '2. Create/select your WHOOP developer application.',
+        `3. Add this redirect URI exactly: ${redirect.uri || 'http://127.0.0.1:8487/callback'}`,
+        '4. Copy Client ID + Client Secret from the app settings page.',
+        '5. Make sure scopes include `offline` so refresh tokens are issued.',
+        '6. Paste values below and continue.',
       ],
       fields: [
         { key: 'client_id', label: 'Client ID', required: true },
@@ -316,6 +457,12 @@ function setupGuide(providerId, cfg) {
         { key: 'redirect_uri', label: 'Redirect URI', required: true },
         { key: 'scopes', label: 'Scopes', required: true },
       ],
+      fieldHelp: {
+        client_id: 'WHOOP dashboard -> your app -> Client ID.',
+        client_secret: 'WHOOP dashboard -> your app -> Client Secret.',
+        redirect_uri: `Must match WHOOP app redirect URI. Recommended: ${redirect.uri || 'http://127.0.0.1:8487/callback'}`,
+        scopes: 'Keep default scopes and ensure `offline` is present for token refresh.',
+      },
     };
   }
 
@@ -323,27 +470,32 @@ function setupGuide(providerId, cfg) {
     return {
       title: 'Eight Sleep onboarding',
       lines: [
-        '- No OAuth app registration is required for this provider.',
-        '- Sign in with your Eight Sleep account credentials (username/email + password).',
-        `- Auth URL used by health-sync: ${cfg?.auth_url || 'https://auth-api.8slp.net/v1/tokens'}`,
-        `- API base used by health-sync: ${eightsleepApiBase(cfg)}`,
-        '- Continue and health-sync will exchange credentials and save tokens to .health-sync.creds.',
+        '1. No developer app setup is required for Eight Sleep.',
+        '2. Use your Eight Sleep account login (username/email + password).',
+        '3. We will exchange credentials for an access token and save it securely.',
+        `4. Auth URL used: ${cfg?.auth_url || 'https://auth-api.8slp.net/v1/tokens'}`,
+        `5. API base used: ${eightsleepApiBase(cfg)}`,
       ],
       fields: [
         { key: 'email', label: 'Username or Email', required: true },
         { key: 'password', label: 'Password', required: true, secret: true },
       ],
+      fieldHelp: {
+        email: 'Your Eight Sleep login username/email.',
+        password: 'Your Eight Sleep account password. It will be shown as *** while you type.',
+      },
     };
   }
 
   return {
     title: `${providerName(providerId)} onboarding`,
     lines: [
-      '- This provider is discovered via plugin and does not have built-in setup docs.',
-      '- Configure required settings in health-sync.toml for this plugin.',
-      '- Then continue and health-sync will run the plugin auth flow.',
+      '1. This provider is from a plugin and has no built-in setup recipe.',
+      '2. Follow the plugin docs and fill required config values.',
+      '3. Then continue and health-sync will run the plugin auth flow.',
     ],
     fields: [],
+    fieldHelp: {},
   };
 }
 
@@ -440,6 +592,7 @@ async function promptInput({
   initialValue = '',
   allowEmpty = true,
   requiredLabel = null,
+  secret = false,
 }) {
   if (!interactiveTerminalAvailable()) {
     return null;
@@ -448,7 +601,7 @@ async function promptInput({
   return await runTuiPrompt((tui, finish) => {
     const root = new Container();
     const heading = new Text(createScreenText(title, lines), 0, 0);
-    const input = new Input();
+    const input = secret ? new MaskedInput() : new Input();
 
     if (hasText(initialValue)) {
       input.setValue(String(initialValue));
@@ -507,43 +660,34 @@ function normalizePromptedValue(rawValue, previousValue, required) {
   return trimmed;
 }
 
-async function promptTextField(providerId, cfg, field) {
+function fieldPromptLines(providerId, field, currentLabel, guide = null, step = null, total = null) {
+  const out = [];
+  if (step !== null && total !== null) {
+    out.push(`Step ${step} of ${total}`);
+  }
+  out.push(`Field: [${providerId}].${field.key}`);
+  out.push(`Current value: ${currentLabel}`);
+  if (guide?.fieldHelp?.[field.key]) {
+    out.push(`Where to find it: ${guide.fieldHelp[field.key]}`);
+  }
+  out.push('Press Enter to keep the current value when available.');
+  return out;
+}
+
+async function promptTextField(providerId, cfg, field, options = {}) {
+  const { guide = null, step = null, total = null } = options;
   const currentValue = cfg?.[field.key];
   const isSecret = Boolean(field.secret);
-
-  if (isSecret && hasText(currentValue)) {
-    const keep = await promptYesNo(
-      `${providerName(providerId)}: ${field.label}`,
-      [
-        'A value is already set in health-sync.toml.',
-        'Keep the existing value?',
-      ],
-      'Keep existing',
-      'Enter new value',
-    );
-    if (keep) {
-      return {
-        ok: true,
-        value: trimOrNull(currentValue),
-      };
-    }
-  }
-
   const currentLabel = hasText(currentValue)
-    ? (isSecret ? '(already set)' : String(currentValue))
+    ? (isSecret ? SECRET_PLACEHOLDER : String(currentValue))
     : '(not set)';
-
-  const lines = [
-    `Field: [${providerId}].${field.key}`,
-    `Current value: ${currentLabel}`,
-    'Press Enter to keep the current value when available.',
-  ];
+  const lines = fieldPromptLines(providerId, field, currentLabel, guide, step, total);
 
   const required = Boolean(field.required);
 
   while (true) {
-    const initialValue = !isSecret && hasText(currentValue)
-      ? String(currentValue)
+    const initialValue = hasText(currentValue)
+      ? (isSecret ? SECRET_PLACEHOLDER : String(currentValue))
       : '';
 
     const rawValue = await promptInput({
@@ -552,13 +696,16 @@ async function promptTextField(providerId, cfg, field) {
       initialValue,
       allowEmpty: true,
       requiredLabel: field.label,
+      secret: isSecret,
     });
 
     if (rawValue === null) {
       return { ok: false, value: null };
     }
 
-    const normalized = normalizePromptedValue(rawValue, currentValue, required);
+    const normalized = isSecret && rawValue === SECRET_PLACEHOLDER && hasText(currentValue)
+      ? trimOrNull(currentValue)
+      : normalizePromptedValue(rawValue, currentValue, required);
     if (required && !hasText(normalized)) {
       continue;
     }
@@ -570,7 +717,7 @@ async function promptTextField(providerId, cfg, field) {
   }
 }
 
-async function promptStravaConfig(cfg) {
+async function promptStravaConfig(cfg, guide = null) {
   const mode = await promptSelect({
     title: 'Strava setup mode',
     lines: [
@@ -593,7 +740,7 @@ async function promptStravaConfig(cfg) {
       label: 'Access Token',
       required: true,
       secret: true,
-    });
+    }, { guide, step: 1, total: 1 });
 
     if (!tokenField.ok) {
       return { ok: false, updates: {} };
@@ -611,12 +758,19 @@ async function promptStravaConfig(cfg) {
     access_token: null,
   };
 
-  for (const field of [
+  const fields = [
     { key: 'client_id', label: 'Client ID', required: true },
     { key: 'client_secret', label: 'Client Secret', required: true, secret: true },
     { key: 'redirect_uri', label: 'Redirect URI', required: true },
-  ]) {
-    const value = await promptTextField('strava', cfg, field);
+  ];
+
+  for (let i = 0; i < fields.length; i += 1) {
+    const field = fields[i];
+    const value = await promptTextField('strava', cfg, field, {
+      guide,
+      step: i + 1,
+      total: fields.length,
+    });
     if (!value.ok) {
       return { ok: false, updates: {} };
     }
@@ -626,16 +780,23 @@ async function promptStravaConfig(cfg) {
   return { ok: true, updates };
 }
 
-async function promptEightSleepConfig(cfg) {
+async function promptEightSleepConfig(cfg, guide = null) {
   const updates = {
     access_token: null,
   };
 
-  for (const field of [
+  const fields = [
     { key: 'email', label: 'Username or Email', required: true },
     { key: 'password', label: 'Password', required: true, secret: true },
-  ]) {
-    const value = await promptTextField('eightsleep', cfg, field);
+  ];
+
+  for (let i = 0; i < fields.length; i += 1) {
+    const field = fields[i];
+    const value = await promptTextField('eightsleep', cfg, field, {
+      guide,
+      step: i + 1,
+      total: fields.length,
+    });
     if (!value.ok) {
       return { ok: false, updates: {} };
     }
@@ -651,16 +812,21 @@ async function promptProviderConfigValues(providerId, cfg, guide) {
   }
 
   if (providerId === 'strava') {
-    return promptStravaConfig(cfg);
+    return promptStravaConfig(cfg, guide);
   }
 
   if (providerId === 'eightsleep') {
-    return promptEightSleepConfig(cfg);
+    return promptEightSleepConfig(cfg, guide);
   }
 
   const updates = {};
-  for (const field of guide.fields) {
-    const value = await promptTextField(providerId, cfg, field);
+  for (let i = 0; i < guide.fields.length; i += 1) {
+    const field = guide.fields[i];
+    const value = await promptTextField(providerId, cfg, field, {
+      guide,
+      step: i + 1,
+      total: guide.fields.length,
+    });
     if (!value.ok) {
       return { ok: false, updates: {} };
     }
@@ -838,6 +1004,27 @@ export async function runProviderPreAuthWizard(providerId, cfg, db, options = {}
       };
     }
     updates = promptResult.updates;
+  }
+
+  if (showGuide && interactiveTerminalAvailable()) {
+    const startAuth = await promptYesNo(
+      `${providerName(providerId)}: ready to connect`,
+      [
+        '- Next, health-sync will start the auth flow for this provider.',
+        '- Keep this terminal open while you finish consent in the browser.',
+        '- If redirected callback fails, paste the callback URL/code back into this terminal.',
+      ],
+      'Start auth now',
+      'Skip for now',
+    );
+
+    if (!startAuth) {
+      return {
+        proceed: false,
+        updates: {},
+        status,
+      };
+    }
   }
 
   return {
