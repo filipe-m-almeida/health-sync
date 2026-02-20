@@ -107,5 +107,5 @@ test('strava watermark parser handles date watermarks', async (t) => {
 
   await stravaProvider.sync(db, config, helpers);
   assert.equal(activityAfter.length, 1);
-  assert.equal(activityAfter[0], '1770681600');
+  assert.equal(activityAfter[0], '1769904000');
 });

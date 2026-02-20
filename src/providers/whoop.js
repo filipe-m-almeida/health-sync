@@ -148,11 +148,9 @@ function collectionUpdatedAt(item) {
   return item?.updated_at || item?.created_at || collectionStartTime(item);
 }
 
-function startIsoForCollection(db, cfg, resource) {
-  const state = db.getSyncState('whoop', resource);
+function startIsoForCollection(cfg) {
   const fallback = `${defaultStartDate(cfg)}T00:00:00Z`;
-  const anchor = state?.watermark || fallback;
-  const anchorDate = new Date(anchor);
+  const anchorDate = new Date(fallback);
   if (Number.isNaN(anchorDate.getTime())) {
     return fallback;
   }
@@ -349,14 +347,16 @@ async function syncSingleResource(db, cfg, token, resource, endpoint) {
 async function syncCollectionResource(db, cfg, token, resource, endpoint) {
   await db.syncRun('whoop', resource, async () => {
     await db.transaction(async () => {
+      const syncStartedAt = utcNowIso();
       const paramsBase = {
         limit: clampPageSize(cfg.page_size),
-        start: startIsoForCollection(db, cfg, resource),
-        end: utcNowIso(),
+        start: startIsoForCollection(cfg),
+        end: syncStartedAt,
       };
 
       let nextToken = null;
       let maxEpoch = initialWatermarkEpoch(db, cfg, resource);
+      const seenRecordIds = new Set();
 
       do {
         const payload = await requestJson(`${whoopApiBase(cfg)}${endpoint}`, {
@@ -370,20 +370,22 @@ async function syncCollectionResource(db, cfg, token, resource, endpoint) {
         });
 
         for (const item of chooseRecords(payload)) {
+          const recordId = collectionRecordId(resource, item);
+          seenRecordIds.add(recordId);
           const startTime = collectionStartTime(item);
           const sourceUpdatedAt = collectionUpdatedAt(item);
 
           db.upsertRecord({
             provider: 'whoop',
             resource,
-            recordId: collectionRecordId(resource, item),
+            recordId,
             startTime,
             endTime: collectionEndTime(item),
             sourceUpdatedAt,
             payload: item,
           });
 
-          const epoch = toEpochSeconds(startTime || sourceUpdatedAt);
+          const epoch = toEpochSeconds(sourceUpdatedAt || startTime);
           if (epoch !== null) {
             maxEpoch = Math.max(maxEpoch, epoch);
           }
@@ -391,6 +393,17 @@ async function syncCollectionResource(db, cfg, token, resource, endpoint) {
 
         nextToken = chooseNextToken(payload);
       } while (nextToken);
+
+      const existingRows = db.conn.prepare(`
+        SELECT record_id
+        FROM records
+        WHERE provider = 'whoop' AND resource = ?
+      `).all(resource);
+      for (const row of existingRows) {
+        if (!seenRecordIds.has(row.record_id)) {
+          db.deleteRecord('whoop', resource, row.record_id, { provider: 'whoop', resource });
+        }
+      }
 
       db.setSyncState('whoop', resource, {
         watermark: dtToIsoZ(new Date(maxEpoch * 1000)),

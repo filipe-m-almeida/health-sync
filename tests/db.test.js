@@ -202,3 +202,101 @@ test('syncRun records error status and error text', async (t) => {
   assert.equal(run.status, 'error');
   assert.match(String(run.errorText), /boom/);
 });
+
+test('init aborts stale running sync runs and reconcile can abort remaining running runs', (t) => {
+  const dir = makeTempDir();
+  const dbPath = dbPathFor(dir);
+  const nowIso = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+  const first = new HealthSyncDb(dbPath);
+  first.init();
+  first.conn.prepare(`
+    INSERT INTO sync_runs(
+      provider, resource, status, started_at, finished_at,
+      watermark_before, watermark_after,
+      inserted_count, updated_count, deleted_count, unchanged_count, error_text
+    ) VALUES (?, ?, 'running', ?, NULL, NULL, NULL, 0, 0, 0, 0, NULL)
+  `).run('oura', 'workout', '2000-01-01T00:00:00Z');
+  first.conn.prepare(`
+    INSERT INTO sync_runs(
+      provider, resource, status, started_at, finished_at,
+      watermark_before, watermark_after,
+      inserted_count, updated_count, deleted_count, unchanged_count, error_text
+    ) VALUES (?, ?, 'running', ?, NULL, NULL, NULL, 0, 0, 0, 0, NULL)
+  `).run('oura', 'sleep', nowIso);
+  first.close();
+
+  const db = new HealthSyncDb(dbPath);
+  db.init();
+  t.after(() => {
+    db.close();
+    removeDir(dir);
+  });
+
+  const staleRow = db.conn.prepare(`
+    SELECT status, finished_at, error_text
+    FROM sync_runs
+    WHERE provider = 'oura' AND resource = 'workout'
+    ORDER BY id DESC
+    LIMIT 1
+  `).get();
+  assert.equal(staleRow.status, 'aborted');
+  assert.ok(staleRow.finished_at);
+  assert.match(String(staleRow.error_text), /Marked aborted by recovery/);
+
+  const recentRowBefore = db.conn.prepare(`
+    SELECT status
+    FROM sync_runs
+    WHERE provider = 'oura' AND resource = 'sleep'
+    ORDER BY id DESC
+    LIMIT 1
+  `).get();
+  assert.equal(recentRowBefore.status, 'running');
+
+  const reconciled = db.reconcileStaleSyncRuns(0);
+  assert.equal(reconciled, 1);
+
+  const recentRowAfter = db.conn.prepare(`
+    SELECT status
+    FROM sync_runs
+    WHERE provider = 'oura' AND resource = 'sleep'
+    ORDER BY id DESC
+    LIMIT 1
+  `).get();
+  assert.equal(recentRowAfter.status, 'aborted');
+});
+
+test('syncRun serializes concurrent runs for the same provider/resource', async (t) => {
+  const db = withDb(t);
+
+  const order = [];
+  let releaseFirst = null;
+  const firstGate = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+
+  const first = db.syncRun('oura', 'daily_sleep', async () => {
+    order.push('first:start');
+    await firstGate;
+    order.push('first:end');
+    db.setSyncState('oura', 'daily_sleep', { watermark: '2026-02-12T00:00:00Z' });
+  });
+
+  const second = db.syncRun('oura', 'daily_sleep', async () => {
+    order.push('second:start');
+    order.push('second:end');
+    db.setSyncState('oura', 'daily_sleep', { watermark: '2026-02-13T00:00:00Z' });
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(order, ['first:start']);
+
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ['first:start', 'first:end', 'second:start', 'second:end']);
+
+  const runs = db.listRecentSyncRuns(2);
+  assert.equal(runs.length, 2);
+  assert.equal(runs[0].status, 'success');
+  assert.equal(runs[1].status, 'success');
+});

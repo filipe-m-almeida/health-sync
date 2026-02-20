@@ -108,6 +108,9 @@ test('hevy delta sync processes updated, deleted, and unknown events', async (t)
   const st = db.getSyncState('hevy', 'workouts');
   assert.ok(st);
   assert.equal(st.watermark, '2026-02-13T09:00:00Z');
+  const eventsState = db.getSyncState('hevy', 'workout_events');
+  assert.ok(eventsState);
+  assert.equal(eventsState.watermark, '2026-02-13T09:00:00Z');
   assert.equal(seenSince.length, 1);
   assert.equal(seenSince[0], '2026-02-11T23:55:00Z');
 
@@ -159,4 +162,7 @@ test('hevy delta sync advances watermark from updated events without top-level t
   const st = db.getSyncState('hevy', 'workouts');
   assert.ok(st);
   assert.equal(st.watermark, '2026-02-13T08:00:00Z');
+  const eventsState = db.getSyncState('hevy', 'workout_events');
+  assert.ok(eventsState);
+  assert.equal(eventsState.watermark, '2026-02-13T08:00:00Z');
 });

@@ -209,18 +209,15 @@ async function syncActivities(db, token, cfg) {
   await db.syncRun('strava', 'activities', async () => {
     await db.transaction(async () => {
       const pageSize = Math.max(1, Math.min(200, Number.parseInt(String(cfg.page_size ?? 100), 10) || 100));
-      const overlapSeconds = Math.max(0, Number.parseInt(String(cfg.overlap_seconds ?? 604800), 10) || 0);
-
+      const syncStartedAt = utcNowIso();
       const state = db.getSyncState('strava', 'activities');
       const existingWatermarkEpoch = state?.watermark ? toEpochSeconds(state.watermark) : null;
       const startDateEpoch = toEpochSeconds(cfg.start_date || '2010-01-01') || 0;
-
-      const afterEpoch = existingWatermarkEpoch === null
-        ? startDateEpoch
-        : Math.max(0, existingWatermarkEpoch - overlapSeconds);
+      const beforeEpoch = toEpochSeconds(syncStartedAt) || Math.floor(Date.now() / 1000);
 
       let page = 1;
-      let maxStartEpoch = existingWatermarkEpoch === null ? afterEpoch : existingWatermarkEpoch;
+      let maxStartEpoch = existingWatermarkEpoch === null ? startDateEpoch : existingWatermarkEpoch;
+      const seenRecordIds = new Set();
 
       while (true) {
         const batch = await requestJson(`${STRAVA_API_BASE}/athlete/activities`, {
@@ -228,7 +225,8 @@ async function syncActivities(db, token, cfg) {
             Authorization: `Bearer ${token}`,
           },
           params: {
-            after: afterEpoch,
+            after: startDateEpoch,
+            before: beforeEpoch,
             page,
             per_page: pageSize,
           },
@@ -237,6 +235,7 @@ async function syncActivities(db, token, cfg) {
         const activities = Array.isArray(batch) ? batch : [];
         for (const item of activities) {
           const recordId = item?.id ? String(item.id) : sha256Hex(JSON.stringify(item));
+          seenRecordIds.add(recordId);
           const startTime = item?.start_date || null;
           const startEpoch = toEpochSeconds(startTime);
           if (startEpoch !== null) {
@@ -257,6 +256,20 @@ async function syncActivities(db, token, cfg) {
           break;
         }
         page += 1;
+      }
+
+      const existingRows = db.conn.prepare(`
+        SELECT record_id
+        FROM records
+        WHERE provider = 'strava' AND resource = 'activities'
+      `).all();
+      for (const row of existingRows) {
+        if (!seenRecordIds.has(row.record_id)) {
+          db.deleteRecord('strava', 'activities', row.record_id, {
+            provider: 'strava',
+            resource: 'activities',
+          });
+        }
       }
 
       if (maxStartEpoch !== null) {

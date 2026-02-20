@@ -84,6 +84,11 @@ export class HealthSyncDb {
     this._oauthMigrated = false;
     this._credsParseWarned = false;
     this._stmtCache = new Map();
+    this._syncRunLocks = new Map();
+    const parsedStaleMaxAge = Number.parseInt(String(options.staleSyncRunMaxAgeSeconds ?? 21600), 10);
+    this._staleSyncRunMaxAgeSeconds = Number.isFinite(parsedStaleMaxAge)
+      ? Math.max(0, parsedStaleMaxAge)
+      : 21600;
   }
 
   close() {
@@ -156,6 +161,7 @@ export class HealthSyncDb {
     `);
 
     this._normalizeLegacyTimestamps();
+    this.reconcileStaleSyncRuns();
     this._migrateOAuthTokensToCredsFile();
   }
 
@@ -366,22 +372,26 @@ export class HealthSyncDb {
       this._stmt('oauth_tokens.delete_provider', 'DELETE FROM oauth_tokens WHERE provider = ?').run(provider);
     }
   }
-  _incrementRunStats(stats, op) {
+  _incrementRunStats(stats, op, count = 1) {
     if (!stats) {
       return;
     }
+    const increment = Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
+    if (increment <= 0) {
+      return;
+    }
     if (op === 'inserted') {
-      stats.insertedCount += 1;
+      stats.insertedCount += increment;
     } else if (op === 'updated') {
-      stats.updatedCount += 1;
+      stats.updatedCount += increment;
     } else if (op === 'deleted') {
-      stats.deletedCount += 1;
+      stats.deletedCount += increment;
     } else if (op === 'unchanged') {
-      stats.unchangedCount += 1;
+      stats.unchangedCount += increment;
     }
   }
 
-  _trackOperation(op, target = null) {
+  _trackOperation(op, target = null, count = 1) {
     let entry = null;
     if (target && typeof target === 'object') {
       const provider = typeof target.provider === 'string' ? target.provider : null;
@@ -404,7 +414,7 @@ export class HealthSyncDb {
       return;
     }
 
-    this._incrementRunStats(entry.stats, op);
+    this._incrementRunStats(entry.stats, op, count);
   }
 
   upsertRecord(
@@ -491,6 +501,26 @@ export class HealthSyncDb {
       return true;
     }
     return false;
+  }
+
+  deleteRecordsNotFetchedSince(provider, resource, fetchedAtThreshold, trackTarget = null) {
+    const normalizedThreshold = normalizeTimestamp(fetchedAtThreshold);
+    if (!normalizedThreshold) {
+      throw new Error('fetchedAtThreshold is required');
+    }
+
+    const result = this._stmt(
+      'records.delete_not_fetched_since',
+      `
+      DELETE FROM records
+      WHERE provider = ? AND resource = ? AND fetched_at < ?
+      `,
+    ).run(provider, resource, normalizedThreshold);
+
+    if (result.changes > 0) {
+      this._trackOperation('deleted', trackTarget, result.changes);
+    }
+    return result.changes;
   }
 
   getSyncState(provider, resource) {
@@ -681,40 +711,135 @@ export class HealthSyncDb {
     });
   }
 
-  async syncRun(provider, resource, fn) {
-    const stateBefore = this.getSyncState(provider, resource);
-    const watermarkBefore = stateBefore?.watermark ?? null;
-    const runId = this.startSyncRun(provider, resource, watermarkBefore);
-    const stats = {
-      insertedCount: 0,
-      updatedCount: 0,
-      deletedCount: 0,
-      unchangedCount: 0,
-    };
+  _syncRunKey(provider, resource) {
+    return `${provider}::${resource}`;
+  }
 
-    const entry = { provider, resource, stats };
-    this._runStatsStack.push(entry);
-    let status = 'success';
-    let errorText = null;
+  async _withSyncRunLock(provider, resource, fn) {
+    const key = this._syncRunKey(provider, resource);
+    const previous = this._syncRunLocks.get(key) || Promise.resolve();
+
+    let releaseCurrent = null;
+    const current = new Promise((resolve) => {
+      releaseCurrent = resolve;
+    });
+    this._syncRunLocks.set(key, current);
+
+    await previous;
     try {
-      await fn();
-    } catch (err) {
-      status = 'error';
-      errorText = err?.stack || err?.message || String(err);
-      throw err;
+      return await fn();
     } finally {
-      this._runStatsStack.pop();
-      const stateAfter = this.getSyncState(provider, resource);
-      this.finishSyncRun(runId, {
-        status,
-        watermarkAfter: stateAfter?.watermark ?? null,
-        insertedCount: entry.stats.insertedCount,
-        updatedCount: entry.stats.updatedCount,
-        deletedCount: entry.stats.deletedCount,
-        unchangedCount: entry.stats.unchangedCount,
-        errorText,
-      });
+      releaseCurrent();
+      if (this._syncRunLocks.get(key) === current) {
+        this._syncRunLocks.delete(key);
+      }
     }
+  }
+
+  _abortStaleRunningSyncRuns(maxAgeSeconds = this._staleSyncRunMaxAgeSeconds, target = null) {
+    const maxAge = Number.isFinite(maxAgeSeconds) ? Math.max(0, Math.trunc(maxAgeSeconds)) : 0;
+    const cutoffEpoch = Math.floor(Date.now() / 1000) - maxAge;
+    const rows = target
+      ? this._stmt(
+        'sync_runs.list_running_for_resource',
+        `
+        SELECT id, started_at
+        FROM sync_runs
+        WHERE provider = ? AND resource = ? AND status = 'running' AND finished_at IS NULL
+        `,
+      ).all(target.provider, target.resource)
+      : this._stmt(
+        'sync_runs.list_running',
+        `
+        SELECT id, started_at
+        FROM sync_runs
+        WHERE status = 'running' AND finished_at IS NULL
+        `,
+      ).all();
+
+    let aborted = 0;
+    for (const row of rows) {
+      const startedEpoch = toEpochSeconds(row.started_at);
+      if (startedEpoch !== null && startedEpoch > cutoffEpoch) {
+        continue;
+      }
+      const result = this._stmt(
+        'sync_runs.abort_stale',
+        `
+        UPDATE sync_runs
+        SET
+          status = 'aborted',
+          finished_at = @finished_at,
+          error_text = COALESCE(NULLIF(error_text, ''), @error_text)
+        WHERE id = @id AND status = 'running' AND finished_at IS NULL
+        `,
+      ).run({
+        id: row.id,
+        finished_at: utcNowIso(),
+        error_text: `Marked aborted by recovery (${maxAge}s stale threshold).`,
+      });
+      aborted += Number(result.changes || 0);
+    }
+
+    return aborted;
+  }
+
+  reconcileStaleSyncRuns(maxAgeSeconds = this._staleSyncRunMaxAgeSeconds) {
+    return this._abortStaleRunningSyncRuns(maxAgeSeconds, null);
+  }
+
+  async syncRun(provider, resource, fn) {
+    return this._withSyncRunLock(provider, resource, async () => {
+      this._abortStaleRunningSyncRuns(this._staleSyncRunMaxAgeSeconds, { provider, resource });
+
+      const running = this._stmt(
+        'sync_runs.find_running_for_resource',
+        `
+        SELECT id
+        FROM sync_runs
+        WHERE provider = ? AND resource = ? AND status = 'running' AND finished_at IS NULL
+        ORDER BY started_at DESC
+        LIMIT 1
+        `,
+      ).get(provider, resource);
+      if (running) {
+        throw new Error(`Sync already running for ${provider}/${resource} (run id ${running.id}).`);
+      }
+
+      const stateBefore = this.getSyncState(provider, resource);
+      const watermarkBefore = stateBefore?.watermark ?? null;
+      const runId = this.startSyncRun(provider, resource, watermarkBefore);
+      const stats = {
+        insertedCount: 0,
+        updatedCount: 0,
+        deletedCount: 0,
+        unchangedCount: 0,
+      };
+
+      const entry = { provider, resource, stats };
+      this._runStatsStack.push(entry);
+      let status = 'success';
+      let errorText = null;
+      try {
+        await fn();
+      } catch (err) {
+        status = 'error';
+        errorText = err?.stack || err?.message || String(err);
+        throw err;
+      } finally {
+        this._runStatsStack.pop();
+        const stateAfter = this.getSyncState(provider, resource);
+        this.finishSyncRun(runId, {
+          status,
+          watermarkAfter: stateAfter?.watermark ?? null,
+          insertedCount: entry.stats.insertedCount,
+          updatedCount: entry.stats.updatedCount,
+          deletedCount: entry.stats.deletedCount,
+          unchangedCount: entry.stats.unchangedCount,
+          errorText,
+        });
+      }
+    });
   }
 
   listRecentSyncRuns(limit = 20) {

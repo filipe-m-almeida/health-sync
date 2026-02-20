@@ -230,8 +230,12 @@ async function hevyDeltaSync(db, cfg, apiKey) {
         }
 
         if (maxEventEpoch !== null) {
+          const watermark = isoFromEpochSeconds(maxEventEpoch);
           db.setSyncState('hevy', 'workouts', {
-            watermark: isoFromEpochSeconds(maxEventEpoch),
+            watermark,
+          });
+          db.setSyncState('hevy', 'workout_events', {
+            watermark,
           });
         }
       });

@@ -165,7 +165,7 @@ test('whoop expired oauth token is refreshed and collection resources are synced
 
   const cycleState = db.getSyncState('whoop', 'cycles');
   assert.ok(cycleState);
-  assert.equal(cycleState.watermark, '2026-02-11T00:00:00Z');
+  assert.equal(cycleState.watermark, '2026-02-11T23:59:59Z');
 });
 
 test('whoop sync raises helpful error when oauth token is missing', async (t) => {
@@ -198,4 +198,96 @@ test('whoop expired token without refresh token requires reauth', async (t) => {
     () => whoopProvider.sync(db, config, helpers),
     /refresh_token is missing/,
   );
+});
+
+test('whoop collection sync uses config start_date anchor even with later watermark', async (t) => {
+  const { db, config, helpers } = withDbAndConfig(t, { start_date: '2026-02-01', overlap_days: 1 });
+  db.setOAuthToken('whoop', {
+    accessToken: 'valid-token',
+    refreshToken: 'refresh-token',
+    tokenType: 'Bearer',
+    scope: 'offline read:sleep',
+    expiresAt: '3020-01-01T00:00:00Z',
+  });
+  db.setSyncState('whoop', 'cycles', { watermark: '2026-12-31T00:00:00Z' });
+
+  const cycleStarts = [];
+  withFetchMock(t, async (input) => {
+    const url = input instanceof URL ? input : new URL(String(input));
+    if (url.pathname.endsWith('/developer/v2/user/profile/basic')) {
+      return jsonResponse({ user_id: 7 });
+    }
+    if (url.pathname.endsWith('/developer/v2/user/measurement/body')) {
+      return jsonResponse({ height_meter: 1.8 });
+    }
+    if (url.pathname.endsWith('/developer/v2/cycle')) {
+      cycleStarts.push(url.searchParams.get('start'));
+      return jsonResponse({ records: [] });
+    }
+    if (
+      url.pathname.endsWith('/developer/v2/recovery')
+      || url.pathname.endsWith('/developer/v2/activity/sleep')
+      || url.pathname.endsWith('/developer/v2/activity/workout')
+    ) {
+      return jsonResponse({ records: [] });
+    }
+    throw new Error(`Unexpected URL: ${url.toString()}`);
+  });
+
+  await whoopProvider.sync(db, config, helpers);
+
+  assert.equal(cycleStarts.length, 1);
+  assert.ok(cycleStarts[0]?.startsWith('2026-01-31T'));
+});
+
+test('whoop collection sync removes locally stale rows not returned by API', async (t) => {
+  const { db, config, helpers } = withDbAndConfig(t);
+  db.setOAuthToken('whoop', {
+    accessToken: 'valid-token',
+    refreshToken: 'refresh-token',
+    tokenType: 'Bearer',
+    scope: 'offline read:sleep',
+    expiresAt: '3020-01-01T00:00:00Z',
+  });
+  db.upsertRecord({
+    provider: 'whoop',
+    resource: 'cycles',
+    recordId: 'stale-cycle',
+    startTime: '2026-02-10T00:00:00Z',
+    sourceUpdatedAt: '2026-02-10T10:00:00Z',
+    payload: { id: 'stale-cycle', start: '2026-02-10T00:00:00Z' },
+  });
+
+  withFetchMock(t, async (input) => {
+    const url = input instanceof URL ? input : new URL(String(input));
+    if (url.pathname.endsWith('/developer/v2/user/profile/basic')) {
+      return jsonResponse({ user_id: 7 });
+    }
+    if (url.pathname.endsWith('/developer/v2/user/measurement/body')) {
+      return jsonResponse({ height_meter: 1.8 });
+    }
+    if (
+      url.pathname.endsWith('/developer/v2/cycle')
+      || url.pathname.endsWith('/developer/v2/recovery')
+      || url.pathname.endsWith('/developer/v2/activity/sleep')
+      || url.pathname.endsWith('/developer/v2/activity/workout')
+    ) {
+      return jsonResponse({ records: [] });
+    }
+    throw new Error(`Unexpected URL: ${url.toString()}`);
+  });
+
+  await whoopProvider.sync(db, config, helpers);
+
+  const stale = db.conn.prepare(`
+    SELECT 1
+    FROM records
+    WHERE provider = 'whoop' AND resource = 'cycles' AND record_id = 'stale-cycle'
+  `).get();
+  assert.equal(stale, undefined);
+
+  const runs = db.listRecentSyncRuns(10);
+  const cycleRun = runs.find((r) => r.provider === 'whoop' && r.resource === 'cycles');
+  assert.ok(cycleRun);
+  assert.equal(cycleRun.deletedCount, 1);
 });
