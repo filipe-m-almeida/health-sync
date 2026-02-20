@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 import {
   initConfigFile,
   loadConfig,
-  scaffoldProviderConfig,
   updateProviderConfigValues,
 } from './config.js';
 import { openDb } from './db.js';
@@ -643,7 +642,6 @@ async function runAuthForProvider({
 
   let currentStartAt = wizardStartAt;
   while (true) {
-    scaffoldProviderConfig(configPath, providerId);
     let loadedConfig = loadConfig(configPath);
 
     const wizard = await runProviderPreAuthWizard(
@@ -663,11 +661,12 @@ async function runAuthForProvider({
       return { skipped: true, reason: wizard.reason || 'skipped' };
     }
 
-    const updates = {
-      enabled: true,
+    const preAuthUpdates = {
       ...(wizard.updates || {}),
     };
-    updateProviderConfigValues(configPath, providerId, updates);
+    if (Object.keys(preAuthUpdates).length) {
+      updateProviderConfigValues(configPath, providerId, preAuthUpdates);
+    }
     loadedConfig = loadConfig(configPath);
 
     try {
@@ -678,6 +677,7 @@ async function runAuthForProvider({
         configPath,
         dbPath,
       });
+      updateProviderConfigValues(configPath, providerId, { enabled: true });
       return {
         skipped: false,
         preflightDetail: wizard.preflightDetail || null,
@@ -723,7 +723,6 @@ async function runConfigOnlySetupForProvider({
 }) {
   requireProvider(context, providerId);
 
-  scaffoldProviderConfig(configPath, providerId);
   const loadedConfig = loadConfig(configPath);
 
   const wizard = await runProviderPreAuthWizard(

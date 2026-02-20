@@ -477,3 +477,47 @@ module = "${moduleSpec}"
   assert.match(content, new RegExp(dbPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.equal(fs.existsSync(markerPath), true);
 });
+
+test('auth failure does not force-enable provider', async (t) => {
+  const dir = makeTempDir();
+  t.after(() => removeDir(dir));
+
+  const configPath = path.join(dir, 'health-sync.toml');
+  const dbPath = dbPathFor(dir, 'auth-fail.sqlite');
+
+  const moduleSpec = writePlugin(
+    dir,
+    'demo-auth-fail',
+    `
+      export default {
+        id: 'demo-auth-fail',
+        supportsAuth: true,
+        async sync() {},
+        async auth() { throw new Error('auth boom'); },
+      };
+    `,
+  );
+
+  writeFile(
+    configPath,
+    `
+[plugins.demo-auth-fail]
+enabled = false
+module = "${moduleSpec}"
+`,
+  );
+
+  const rc = await main([
+    '--config',
+    configPath,
+    '--db',
+    dbPath,
+    'auth',
+    'demo-auth-fail',
+  ]);
+  assert.equal(rc, 1);
+
+  const content = fs.readFileSync(configPath, 'utf8');
+  assert.match(content, /\[plugins\.demo-auth-fail\]/);
+  assert.match(content, /enabled = false/);
+});
