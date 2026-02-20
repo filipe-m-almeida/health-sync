@@ -11,19 +11,55 @@ Only one onboarding flow is supported:
 
 Legacy setup flows are out of scope for bot guidance.
 
+The bot must actively guide the user step-by-step through this flow.
+Do not just send one command and stop; confirm each phase before continuing.
+
 ## Command Summary
 
 Bot-side commands:
 
-1. `health-sync init remote bootstrap --expires-in 24h`
-2. `health-sync init remote finish <bootstrap-ref> <archive-path>`
-3. `health-sync providers --verbose`
-4. `health-sync sync`
-5. `health-sync status`
+1. `npx health-sync init remote bootstrap --expires-in 24h`
+2. `npx health-sync init remote finish <bootstrap-ref> <archive-path>`
+3. `npx health-sync providers --verbose`
+4. `npx health-sync sync`
+5. `npx health-sync status`
 
 User-side command:
 
-1. `health-sync init --remote <bootstrap-token>`
+1. `npx health-sync init --remote <bootstrap-token>`
+
+## User Prerequisite Guidance (`npx` and npm)
+
+When the user is unsure what `npx` is, or reports `npx: command not found`, the bot must guide them through prerequisites before retrying setup.
+
+Use this sequence:
+
+1. Ask user to check existing tools:
+
+```bash
+node -v
+npm -v
+npx --version
+```
+
+2. If npm/npx is missing, tell user to install Node.js LTS (which includes npm and npx):
+   - macOS (Homebrew): `brew install node`
+   - Ubuntu/Debian: `sudo apt update && sudo apt install -y nodejs npm`
+   - Windows: install Node.js LTS from `https://nodejs.org/`
+
+3. Ask user to close/reopen terminal and rerun:
+
+```bash
+node -v
+npm -v
+npx --version
+```
+
+4. Continue onboarding with:
+
+```bash
+npx health-sync init --remote <bootstrap-token>
+```
 
 ## Bot Responsibilities
 
@@ -43,7 +79,7 @@ The bot must:
 Run:
 
 ```bash
-health-sync init remote bootstrap --expires-in 24h
+npx health-sync init remote bootstrap --expires-in 24h
 ```
 
 Capture from output:
@@ -60,7 +96,7 @@ Send this instruction pattern:
 I created a secure one-time setup token for your Health Sync onboarding.
 
 Please run this on your own machine:
-health-sync init --remote <TOKEN>
+npx health-sync init --remote <TOKEN>
 
 This will walk you through provider setup and generate an encrypted archive.
 Send that archive file back here when done.
@@ -77,13 +113,13 @@ Important guidance to include:
 After receiving the archive:
 
 ```bash
-health-sync init remote finish <TOKEN_OR_KEY_ID_OR_SESSION_ID> /path/to/archive.enc
+npx health-sync init remote finish <TOKEN_OR_KEY_ID_OR_SESSION_ID> /path/to/archive.enc
 ```
 
 Optional target paths:
 
 ```bash
-health-sync init remote finish <REF> /path/to/archive.enc \
+npx health-sync init remote finish <REF> /path/to/archive.enc \
   --target-config /path/to/health-sync.toml \
   --target-creds /path/to/.health-sync.creds
 ```
@@ -101,9 +137,9 @@ Expected finish behavior:
 Run:
 
 ```bash
-health-sync providers --verbose
-health-sync sync
-health-sync status
+npx health-sync providers --verbose
+npx health-sync sync
+npx health-sync status
 ```
 
 Report:
@@ -119,6 +155,7 @@ Do not ask users to:
 1. paste `client_secret`, `api_key`, OAuth callback URLs, access tokens, or passwords into chat
 2. run `health-sync auth <provider>` as onboarding
 3. do manual same-machine setup (`health-sync init`) as the primary flow
+4. globally install `health-sync` as a first step when `npx health-sync ...` is sufficient
 
 Do not instruct mixed flows. Remote bootstrap is the only setup workflow for ClawHub bot guidance.
 
@@ -130,7 +167,7 @@ Do not instruct mixed flows. Remote bootstrap is the only setup workflow for Cla
 Secure setup is ready.
 Run this command on your own machine:
 
-health-sync init --remote <TOKEN>
+npx health-sync init --remote <TOKEN>
 
 The wizard will guide you provider-by-provider and then output an encrypted archive.
 Please upload that archive file here when complete.
@@ -157,7 +194,9 @@ Setup import complete. I will now run a sync and verify your provider status.
 3. Archive does not match token/session:
    - Confirm user used the latest token.
 4. User reports no archive generated:
-   - Ask them to rerun `health-sync init --remote <TOKEN>` and complete provider auth steps.
+   - Ask them to rerun `npx health-sync init --remote <TOKEN>` and complete provider auth steps.
+5. User reports `npx` not found:
+   - Guide npm installation using the prerequisite section above, then retry.
 
 ## Security Notes
 
@@ -166,8 +205,8 @@ Setup import complete. I will now run a sync and verify your provider status.
 3. Treat imported `health-sync.toml` and `.health-sync.creds` as secrets.
 4. Do not commit secret files to version control.
 
-## Additional Architecture Reference
+## Architecture Notes
 
-For full crypto/session/archive architecture:
+This setup reference is intentionally self-contained for skill runtime.
 
-- `../../../../docs/remote-bootstrap.md`
+If a runtime platform cannot resolve repository-level docs paths, continue using this file as the authoritative bot runbook for remote bootstrap onboarding.
