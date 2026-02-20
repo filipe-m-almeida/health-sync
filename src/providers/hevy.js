@@ -36,8 +36,24 @@ function workoutRecordShape(workout) {
   };
 }
 
+function eventWorkout(event) {
+  if (event?.workout && typeof event.workout === 'object') {
+    return event.workout;
+  }
+  if (event?.data && typeof event.data === 'object') {
+    return event.data;
+  }
+  return null;
+}
+
 function eventTimestamp(event) {
-  return event?.updated_at || event?.deleted_at || event?.timestamp || event?.created_at || null;
+  const directTs = event?.updated_at || event?.deleted_at || event?.timestamp || event?.created_at || null;
+  if (directTs) {
+    return directTs;
+  }
+
+  const workout = eventWorkout(event);
+  return workout?.updated_at || workout?.created_at || workout?.start_time || null;
 }
 
 async function hevyInitialSync(db, cfg, apiKey) {
@@ -145,11 +161,7 @@ async function hevyDeltaSync(db, cfg, apiKey) {
             }
 
             if (type === 'updated') {
-              const workout = event?.workout && typeof event.workout === 'object'
-                ? event.workout
-                : event?.data && typeof event.data === 'object'
-                  ? event.data
-                  : null;
+              const workout = eventWorkout(event);
 
               const workoutId = workout?.id || event?.workout_id || event?.id;
               if (workout && workoutId) {

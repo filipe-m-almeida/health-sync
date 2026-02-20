@@ -128,3 +128,35 @@ test('hevy delta sync processes updated, deleted, and unknown events', async (t)
   assert.equal(workoutRun.deletedCount, 1);
   assert.equal(eventsRun.insertedCount, 3);
 });
+
+test('hevy delta sync advances watermark from updated events without top-level timestamp', async (t) => {
+  const { db, config, helpers } = withDbAndConfig(t, { overlap_seconds: 300 });
+  db.setSyncState('hevy', 'workouts', { watermark: '2026-02-12T00:00:00Z' });
+
+  withFetchMock(t, async (input) => {
+    const url = input instanceof URL ? input : new URL(String(input));
+    if (url.pathname.endsWith('/v1/workouts/events')) {
+      return jsonResponse({
+        events: [
+          {
+            type: 'updated',
+            workout: {
+              id: 'w-updated-only',
+              start_time: '2026-02-13T06:00:00Z',
+              end_time: '2026-02-13T07:00:00Z',
+              updated_at: '2026-02-13T08:00:00Z',
+            },
+          },
+        ],
+        page_count: 1,
+      });
+    }
+    throw new Error(`Unexpected URL: ${url.toString()}`);
+  });
+
+  await hevyProvider.sync(db, config, helpers);
+
+  const st = db.getSyncState('hevy', 'workouts');
+  assert.ok(st);
+  assert.equal(st.watermark, '2026-02-13T08:00:00Z');
+});
