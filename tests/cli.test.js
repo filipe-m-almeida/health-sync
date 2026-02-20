@@ -118,6 +118,16 @@ test('parseArgs rejects flag-like auth provider id', () => {
   );
 });
 
+test('parseArgs auth accepts --local manual callback mode', () => {
+  const parsed = parseArgs(['auth', '--local', 'oura', '--listen-port', '8486']);
+  assert.equal(parsed.options.provider, 'oura');
+  assert.equal(parsed.options.local, true);
+  assert.equal(parsed.options.listenPort, 8486);
+
+  const fallback = parseArgs(['auth', 'oura']);
+  assert.equal(fallback.options.local, false);
+});
+
 test('init creates scaffolded config from example template', async (t) => {
   const dir = makeTempDir();
   t.after(() => removeDir(dir));

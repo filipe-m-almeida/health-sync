@@ -103,6 +103,7 @@ function parseAuthArgs(args) {
     provider: null,
     listenHost: '127.0.0.1',
     listenPort: 0,
+    local: false,
   };
 
   for (let i = 0; i < args.length; i += 1) {
@@ -129,6 +130,10 @@ function parseAuthArgs(args) {
     }
     if (arg.startsWith('--listen-port=')) {
       out.listenPort = Number.parseInt(arg.slice('--listen-port='.length), 10) || 0;
+      continue;
+    }
+    if (arg === '--local') {
+      out.local = true;
       continue;
     }
     if (arg.startsWith('--')) {
@@ -627,6 +632,7 @@ async function runAuthForProvider({
   db,
   listenHost,
   listenPort,
+  allowManualCodeEntry = false,
   showGuide,
   showConfigPrompts,
   askRedoIfWorking,
@@ -668,6 +674,7 @@ async function runAuthForProvider({
       await plugin.auth(db, loadedConfig.data, new PluginHelpers(loadedConfig.data), {
         listenHost,
         listenPort,
+        allowManualCodeEntry,
         configPath,
         dbPath,
       });
@@ -779,6 +786,7 @@ function usage() {
     '  auth <provider>               Run provider authentication flow for one provider',
     '    --listen-host <host>        OAuth callback listen host (default 127.0.0.1)',
     '    --listen-port <port>        OAuth callback listen port (default 0 -> config redirect port)',
+    '    --local                     Enable manual callback/code paste mode',
     '  sync [--providers a,b,c] [-v|--verbose]  Sync enabled providers',
     '  providers [--verbose]         List discovered providers',
     '  status                        Show sync state, counts, and recent runs',
@@ -1237,6 +1245,7 @@ async function cmdAuth(parsed) {
       db,
       listenHost: parsed.options.listenHost,
       listenPort: parsed.options.listenPort,
+      allowManualCodeEntry: parsed.options.local,
       showGuide: false,
       showConfigPrompts: parsed.options.provider === 'eightsleep',
       askRedoIfWorking: hasInteractiveAuthUi(),

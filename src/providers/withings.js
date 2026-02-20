@@ -238,6 +238,7 @@ async function withingsAuth(db, config, helpers, options = {}) {
     listenPort,
     callbackPath: redirect.path,
     timeoutSeconds: 300,
+    allowManualCodeEntry: Boolean(options.allowManualCodeEntry),
     onStatus: (line) => console.log(line),
   });
 

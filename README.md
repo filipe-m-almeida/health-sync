@@ -167,6 +167,7 @@ See `health-sync.example.toml` for all provider options.
 - `health-sync init remote finish <ref> <archive>`: decrypt and import remote archive
 - `health-sync init-db`: create DB tables only (legacy)
 - `health-sync auth <provider>`: run auth flow for one provider/plugin
+- `health-sync auth <provider> --local`: enable manual callback/code paste mode
 - `health-sync sync`: run sync for all enabled providers
 - `health-sync sync --providers oura strava`: sync only selected providers
 - `health-sync providers`: list discovered providers and whether they are enabled
@@ -174,7 +175,8 @@ See `health-sync.example.toml` for all provider options.
 
 `auth` notes:
 
-- Oura, Withings, Strava, and WHOOP: OAuth flow (CLI prints auth URL and waits for callback URL/code).
+- Oura, Withings, Strava, and WHOOP: OAuth flow (CLI prints auth URL and waits for browser redirect callback by default).
+- Use `health-sync auth <provider> --local` if you want manual callback/code paste mode.
 - Eight Sleep: username/password grant (or static token).
 - Hevy: no `auth` command; configure `[hevy].api_key` directly.
 

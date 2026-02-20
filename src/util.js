@@ -447,6 +447,7 @@ export async function oauthListenForCode(options = {}) {
     callbackPath = '/callback',
     timeoutSeconds = 300,
     onStatus = null,
+    allowManualCodeEntry = false,
   } = options;
 
   const normalizedPath = callbackPath.startsWith('/') ? callbackPath : `/${callbackPath}`;
@@ -532,13 +533,13 @@ export async function oauthListenForCode(options = {}) {
     onStatus(`Listening for OAuth callback on ${callbackUrl}`);
   }
 
-  if (process.stdin.isTTY) {
+  if (allowManualCodeEntry && process.stdin.isTTY) {
     rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
     });
     if (typeof onStatus === 'function') {
-      onStatus('If browser redirect fails, paste the full callback URL or auth code and press Enter.');
+      onStatus('Manual callback entry enabled: paste the full callback URL or auth code and press Enter.');
     }
     rl.setPrompt('OAuth code/callback> ');
     rl.prompt();

@@ -51,6 +51,8 @@ const PROVIDER_NAMES = {
 const ABORT_SENTINEL = Symbol('health-sync-abort');
 const URL_PATTERN = /https?:\/\/[^\s)]+/g;
 const WRAP_MIN_WIDTH = 24;
+const BRACKETED_PASTE_START = '\u001b[200~';
+const BRACKETED_PASTE_END = '\u001b[201~';
 
 export class UserAbortError extends Error {
   constructor(message = 'Setup aborted by user.') {
@@ -72,6 +74,28 @@ function graphemes(value) {
 
 function secretMask(value) {
   return '*'.repeat(graphemes(value).length);
+}
+
+function normalizeMaskedInputData(data) {
+  if (typeof data !== 'string' || !data.length) {
+    return { text: '', isBracketedPaste: false };
+  }
+
+  const isBracketedPaste = data.includes(BRACKETED_PASTE_START)
+    || data.includes(BRACKETED_PASTE_END);
+  if (!isBracketedPaste) {
+    return { text: data, isBracketedPaste: false };
+  }
+
+  const stripped = data
+    .split(BRACKETED_PASTE_START).join('')
+    .split(BRACKETED_PASTE_END).join('')
+    .replace(/[\r\n]+/g, '');
+
+  return {
+    text: stripped,
+    isBracketedPaste: true,
+  };
 }
 
 function styleTextWithUrls(text, colorFn = null) {
@@ -292,15 +316,21 @@ class MaskedInput {
       return;
     }
 
-    const hasControlChars = [...data].some((ch) => {
-      const code = ch.charCodeAt(0);
-      return code < 32 || code === 0x7f || (code >= 0x80 && code <= 0x9f);
-    });
-    if (hasControlChars || data.startsWith('\u001b')) {
+    const normalizedInput = normalizeMaskedInputData(data);
+    const textInput = normalizedInput.text;
+    if (!textInput.length) {
       return;
     }
 
-    const inserted = graphemes(data);
+    const hasControlChars = [...textInput].some((ch) => {
+      const code = ch.charCodeAt(0);
+      return code < 32 || code === 0x7f || (code >= 0x80 && code <= 0x9f);
+    });
+    if (hasControlChars || (!normalizedInput.isBracketedPaste && textInput.startsWith('\u001b'))) {
+      return;
+    }
+
+    const inserted = graphemes(textInput);
     if (!inserted.length) {
       return;
     }
@@ -1914,7 +1944,8 @@ export async function runProviderPreAuthWizard(providerId, cfg, db, options = {}
         ? [
           '- Next, health-sync will start the auth flow for this provider.',
           '- Keep this terminal open while you finish consent in the browser.',
-          '- If redirected callback fails, paste the callback URL/code back into this terminal.',
+          '- By default, health-sync waits for the browser redirect callback automatically.',
+          `- For manual callback/code paste mode, run \`health-sync auth ${providerId} --local\`.`,
         ]
         : (Array.isArray(guide.finalLines) && guide.finalLines.length
           ? guide.finalLines
